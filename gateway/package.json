@@ -1,0 +1,17 @@
+{
+  "name": "iq-kbteams-gateway",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24 <25" },
+  "scripts": { "build": "tsc -p tsconfig.json", "start": "node dist/server.js", "test": "npm run build && node --test test/*.test.mjs" },
+  "dependencies": {
+    "@azure/msal-node": "7.0.1",
+    "@microsoft/teams.apps": "2.0.16",
+    "express": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  }
+}

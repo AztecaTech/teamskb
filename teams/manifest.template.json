@@ -1,0 +1,15 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.29/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.29",
+  "version": "1.0.0",
+  "id": "__TEAMS_APP_ID__",
+  "developer": { "name": "IQ-kbteams operator", "websiteUrl": "__PUBLIC_ORIGIN__", "privacyUrl": "__PRIVACY_URL__", "termsOfUseUrl": "__TERMS_URL__" },
+  "name": { "short": "IQ Knowledge", "full": "IQ Knowledge Assistant" },
+  "description": { "short": "Search approved organizational sources.", "full": "A self-hosted assistant that retrieves and answers from enabled organizational sources using each user's existing permissions." },
+  "icons": { "outline": "outline.png", "color": "color.png" },
+  "accentColor": "#264653",
+  "bots": [{ "botId": "__BOT_CLIENT_ID__", "scopes": ["personal", "groupChat", "team"], "isNotificationOnly": false, "supportsFiles": false, "supportsCalling": false, "supportsVideo": false }],
+  "staticTabs": [{ "entityId": "assistant", "name": "Knowledge Assistant", "contentUrl": "__PUBLIC_ORIGIN__/", "websiteUrl": "__PUBLIC_ORIGIN__/", "scopes": ["personal"] }],
+  "validDomains": ["__PUBLIC_HOST__", "token.botframework.com"],
+  "webApplicationInfo": { "id": "__APP_CLIENT_ID__", "resource": "__APP_ID_URI__" }
+}

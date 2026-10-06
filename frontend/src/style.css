@@ -1,0 +1,46 @@
+:root { font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #17232d; background: #f3f6f8; font-synthesis: none; text-rendering: optimizeLegibility; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+main { max-width: 44rem; margin: 0 auto; padding: 5rem 2rem 3rem; }
+.brand-mark { display: grid; place-items: center; width: 3rem; height: 3rem; border-radius: 1rem; background: #123b4a; color: #fff; font-weight: 750; letter-spacing: -.08em; }
+.eyebrow { margin: 2rem 0 .55rem; color: #327c79; font-size: .72rem; font-weight: 750; letter-spacing: .14em; }
+h1 { margin: 0; font-size: clamp(2rem, 5vw, 2.7rem); letter-spacing: -.045em; }
+.intro { max-width: 34rem; margin: .9rem 0 2rem; color: #52616b; font-size: 1.1rem; line-height: 1.65; }
+.status-card, .setup-card { display: flex; gap: 1rem; align-items: flex-start; border: 1px solid #dce4e8; border-radius: .8rem; background: white; padding: 1.15rem 1.25rem; box-shadow: 0 4px 18px #1735410a; }
+.status-dot { flex: 0 0 auto; width: .65rem; height: .65rem; margin-top: .35rem; border-radius: 50%; background: #c48b2d; box-shadow: 0 0 0 4px #c48b2d20; }
+.status-dot.ready { background: #25846d; box-shadow: 0 0 0 4px #25846d20; }
+.status-card strong { font-size: .95rem; }
+.status-card p, .setup-card p { margin: .35rem 0 0; color: #5b6b74; line-height: 1.55; }
+.account { display: flex; justify-content: space-between; margin: 1rem 0; padding: .8rem .15rem; color: #596970; border-bottom: 1px solid #dce4e8; font-size: .9rem; }
+.account strong { color: #183c48; }
+.setup-card { display: block; margin-top: 1.25rem; }
+.setup-card h2 { margin: 0; font-size: 1rem; }
+.setup-card .muted { color: #78858b; font-size: .87rem; }
+.admin-form { display: grid; gap: .9rem; margin-top: 1rem; }
+label { display: grid; gap: .35rem; color: #344b55; font-size: .88rem; font-weight: 650; }
+input, select, textarea { width: 100%; padding: .7rem .75rem; border: 1px solid #cbd7dc; border-radius: .45rem; background: #fff; color: #17232d; font: inherit; font-weight: 400; }
+input:focus, select:focus, textarea:focus { outline: 2px solid #4a9690; outline-offset: 1px; }
+textarea { resize: vertical; line-height: 1.5; }
+.button-row { display: flex; flex-wrap: wrap; gap: .55rem; }
+.button-row button { margin-top: 0; }
+.source-toggle { display: flex; align-items: center; gap: .65rem; margin: 1.25rem 0 .5rem; }
+.source-toggle input { width: 1rem; height: 1rem; margin: 0; accent-color: #174b59; }
+.source-setup { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e1e8eb; }
+.source-setup .muted { margin: .5rem 0 .75rem; color: #78858b; font-size: .84rem; line-height: 1.5; }
+.source-setup textarea { margin-top: .1rem; font-size: .87rem; }
+.query-entry { margin: .85rem 0; padding: .8rem; border: 1px solid #e1e8eb; border-radius: .5rem; background: #f8fafb; }
+.query-entry pre { overflow-x: auto; padding: .7rem; border-radius: .4rem; background: #edf2f4; color: #243b44; font: .78rem/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-card { margin-top: 1.25rem; padding: 1.25rem; border: 1px solid #dce4e8; border-radius: .8rem; background: white; box-shadow: 0 4px 18px #1735410a; }
+.ask-card h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+.ask-card form { display: grid; gap: .7rem; }
+.ask-card form button { justify-self: start; margin-top: .15rem; }
+.answer { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #e1e8eb; }
+.answer h3 { margin: 0 0 .5rem; font-size: .9rem; }
+.answer-text { margin: 0 0 1.2rem; color: #253b44; white-space: pre-wrap; line-height: 1.65; }
+.answer ul { margin: 0; padding-left: 1.2rem; }
+.answer li { margin: .4rem 0; color: #52616b; }
+.answer a { color: #12695f; }
+button { margin-top: 1rem; padding: .65rem .9rem; border: 0; border-radius: .5rem; background: #174b59; color: white; font: inherit; font-size: .88rem; font-weight: 650; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+footer { margin-top: 2.5rem; color: #758188; font-size: .82rem; line-height: 1.5; }
+@media (max-width: 520px) { main { padding: 3rem 1.2rem 2rem; } }
