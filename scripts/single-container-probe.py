@@ -31,7 +31,7 @@ with sqlite3.connect('/var/lib/iqkb/config.sqlite', timeout=5) as db:
 
 secrets = {"MODEL_API_KEY", "APP_CLIENT_SECRET", "BOT_CLIENT_SECRET",
            "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "MSAL_CACHE_KEY_HEX", "BOOTSTRAP_SECRET"}
-bot_enabled = os.environ.get('BOT_ENABLED') != 'false'
+bot_enabled = os.environ.get('BOT_ENABLED', 'false').strip().lower() == 'true'
 for pid, uid, allowed in zip(pids, (65534, 65532, 65532, 65533),
                              (set(), {"APP_CLIENT_SECRET", "MSAL_CACHE_KEY_HEX"} | ({"BOT_CLIENT_SECRET"} if bot_enabled else set()),
                               {"MODEL_API_KEY", "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "BOOTSTRAP_SECRET"}, set())):

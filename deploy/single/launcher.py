@@ -33,8 +33,10 @@ def environment(names, **fixed):
 
 
 def main():
+    bot_enabled = os.environ.get("BOT_ENABLED", "false").strip().lower() == "true"
+    print("Startup mode: " + ("bot + tab" if bot_enabled else "tab-only"), flush=True)
     required = "PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_CLIENT_SECRET BOOTSTRAP_SECRET MODEL_API_KEY APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY MSAL_CACHE_KEY_HEX"
-    if os.environ.get("BOT_ENABLED") != "false":
+    if bot_enabled:
         required += " BOT_CLIENT_ID TEAMS_APP_ID BOT_CLIENT_SECRET"
     missing = [name for name in required.split() if not os.environ.get(name, "").strip()]
     if missing:
@@ -81,6 +83,7 @@ def main():
         os.chmod("/run/parser/parser.sock", 0o660)
         start(["node", "/opt/iqkb/gateway/dist/server.js"], APP_UID,
               environment("BOT_ENABLED TENANT_ID APP_CLIENT_ID BOT_CLIENT_ID TEAMS_APP_ID PUBLIC_ORIGIN APP_CLIENT_SECRET BOT_CLIENT_SECRET MSAL_CACHE_KEY_HEX OAUTH_CONNECTION_NAME",
+                          BOT_ENABLED="true" if bot_enabled else "false",
                           NODE_ENV="production", PORT="3978", HTTP_LISTEN_HOST="127.0.0.1", OBO_SOCKET="/run/iqkb/obo.sock"))
         start(["iqkb"], APP_UID,
               environment("PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY BOOTSTRAP_SECRET MODEL_API_KEY POSTGRES_DSN MODEL_MONTHLY_ATTEMPT_LIMIT AUDIT_RETENTION_DAYS",

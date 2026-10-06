@@ -75,6 +75,7 @@ services:
     pids_limit: ${GATEWAY_PIDS_LIMIT:-64}
     environment:
       PORT: "3978"
+      BOT_ENABLED: ${BOT_ENABLED:-true}
       TENANT_ID: ${TENANT_ID:?set TENANT_ID}
       APP_CLIENT_ID: ${APP_CLIENT_ID:?set APP_CLIENT_ID}
       BOT_CLIENT_ID: ${BOT_CLIENT_ID:?set BOT_CLIENT_ID}

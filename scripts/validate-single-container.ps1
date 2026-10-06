@@ -44,6 +44,8 @@ POSTGRES_DSN=postgres://db.example.test:5432/company?sslmode=verify-full
   if ($TabOnly) {
     $dummyEnv = $dummyEnv -replace '(?m)^BOT_CLIENT_ID=.*\r?\n', '' -replace '(?m)^BOT_CLIENT_SECRET=.*\r?\n', '' -replace '(?m)^TEAMS_APP_ID=.*\r?\n', ''
     $dummyEnv += "`nBOT_ENABLED=false`n"
+  } else {
+    $dummyEnv += "`nBOT_ENABLED=true`n"
   }
   [IO.File]::WriteAllText((Join-Path $scratch '.env'), $dummyEnv)
   $sourcePath = $repository.Replace('\','/')

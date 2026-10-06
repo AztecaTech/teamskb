@@ -9,6 +9,8 @@ services:
     init: true
     env_file:
       - .env
+    environment:
+      BOT_ENABLED: ${BOT_ENABLED:-false}
     # The existing gateway calls app:8080; in this image it is loopback only.
     extra_hosts:
       - "app:127.0.0.1"

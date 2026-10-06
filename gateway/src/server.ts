@@ -7,7 +7,7 @@ import { startOboSocket } from './obo.js';
 import { createBotMessageHandler } from './bot-message.js';
 
 const port = Number(process.env.PORT ?? '3978');
-const botEnabled = process.env.BOT_ENABLED !== 'false';
+const botEnabled = process.env.BOT_ENABLED?.trim().toLowerCase() === 'true';
 const tenantId = process.env.TENANT_ID;
 const botClientId = process.env.BOT_CLIENT_ID;
 const appClientId = process.env.APP_CLIENT_ID;
