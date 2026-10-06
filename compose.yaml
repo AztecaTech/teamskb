@@ -1,0 +1,153 @@
+services:
+  caddy:
+    image: caddy:2@sha256:13b7fbadd017b042956fddbceedeeea12bb1e560534f9b3df281269dbcc61813
+    restart: unless-stopped
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    cpus: ${CADDY_CPUS:-1.0}
+    pids_limit: ${CADDY_PIDS_LIMIT:-64}
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    networks: [public]
+
+  app:
+    image: iq-kbteams-app:local
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    restart: unless-stopped
+    mem_limit: ${APP_MEM_LIMIT:-1536m}
+    cpus: ${APP_CPUS:-2.0}
+    pids_limit: ${APP_PIDS_LIMIT:-128}
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "/iqkb", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      gateway:
+        condition: service_healthy
+      parser:
+        condition: service_healthy
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}
+      TENANT_ID: ${TENANT_ID:?set TENANT_ID}
+      ADMIN_OBJECT_ID: ${ADMIN_OBJECT_ID:?set ADMIN_OBJECT_ID}
+      APP_CLIENT_ID: ${APP_CLIENT_ID:?set APP_CLIENT_ID}
+      SQLITE_PATH: /var/lib/iqkb/config.sqlite
+      BRIDGE_SOCKET: /run/iqkb/bridge.sock
+      PARSER_SOCKET: /run/parser/parser.sock
+      OBO_SOCKET: /run/iqkb/obo.sock
+      BRIDGE_HMAC_KEY_FILE: /run/secrets/bridge_hmac_key
+      APP_ENCRYPTION_KEY_FILE: /run/secrets/app_encryption_key
+      BOOTSTRAP_SECRET_FILE: /run/secrets/bootstrap_secret
+      MODEL_API_KEY_FILE: /run/secrets/model_api_key
+      MODEL_MONTHLY_ATTEMPT_LIMIT: ${MODEL_MONTHLY_ATTEMPT_LIMIT:-10000}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-30}
+      POSTGRES_DSN_FILE: /run/secrets/postgres_dsn
+    secrets: [bridge_hmac_key, app_encryption_key, bootstrap_secret, model_api_key, postgres_dsn]
+    volumes:
+      - app_data:/var/lib/iqkb
+      - bridge_socket:/run/iqkb
+      - parser_socket:/run/parser
+    expose: ["8080"]
+    networks: [public]
+
+  gateway:
+    image: iq-kbteams-gateway:local
+    build: ./gateway
+    restart: unless-stopped
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
+    cpus: ${GATEWAY_CPUS:-1.0}
+    pids_limit: ${GATEWAY_PIDS_LIMIT:-64}
+    environment:
+      PORT: "3978"
+      TENANT_ID: ${TENANT_ID:?set TENANT_ID}
+      APP_CLIENT_ID: ${APP_CLIENT_ID:?set APP_CLIENT_ID}
+      BOT_CLIENT_ID: ${BOT_CLIENT_ID:?set BOT_CLIENT_ID}
+      OAUTH_CONNECTION_NAME: ${OAUTH_CONNECTION_NAME:-iqkbteams}
+      TEAMS_APP_ID: ${TEAMS_APP_ID:?set TEAMS_APP_ID}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN}
+      APP_CLIENT_SECRET_FILE: /run/secrets/app_client_secret
+      BOT_CLIENT_SECRET_FILE: /run/secrets/bot_client_secret
+      OBO_SOCKET: /run/iqkb/obo.sock
+      MSAL_CACHE_KEY_FILE: /run/secrets/gateway_cache_key
+    secrets: [gateway_cache_key, app_client_secret, bot_client_secret]
+    volumes:
+      - bridge_socket:/run/iqkb
+      - gateway_cache:/var/lib/iqkb-msal
+    expose: ["3978"]
+    networks: [public]
+    healthcheck:
+      test: ["CMD", "node", "-e", "import('node:net').then(({connect})=>{const s=connect({host:'127.0.0.1',port:3978});s.setTimeout(1000);s.on('connect',()=>{s.destroy();process.exit(0)});s.on('timeout',()=>process.exit(1));s.on('error',()=>process.exit(1))})"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+
+  parser:
+    image: iq-kbteams-parser:local
+    build: ./parser
+    restart: unless-stopped
+    read_only: true
+    network_mode: none
+    environment:
+      PARSER_SOCKET: /run/iqkb/parser.sock
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
+    tmpfs:
+      - "/tmp:size=64m,noexec,nosuid,nodev"
+    volumes:
+      - parser_socket:/run/iqkb
+    expose: []
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; s=socket.socket(socket.AF_UNIX); s.settimeout(1); s.connect(os.getenv('PARSER_SOCKET','/run/iqkb/parser.sock')); s.close()"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 5s
+
+secrets:
+  bridge_hmac_key:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/bridge_hmac_key
+  app_encryption_key:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/app_encryption_key
+  gateway_cache_key:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/gateway_cache_key
+  app_client_secret:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/app_client_secret
+  bot_client_secret:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/bot_client_secret
+  bootstrap_secret:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/bootstrap_secret
+  model_api_key:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/model_api_key
+  postgres_dsn:
+    file: ${IQKB_SECRETS_DIR:-../IQ-kbteams-secrets}/postgres_dsn
+
+volumes:
+  app_data:
+  gateway_cache:
+  bridge_socket:
+  parser_socket:
+  caddy_data:
+  caddy_config:
+
+networks:
+  public: {}

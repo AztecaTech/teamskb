@@ -1,0 +1,15 @@
+.git
+**/.git
+.env
+**/.env
+.env.*
+**/.env.*
+secrets
+**/secrets
+data
+node_modules
+**/node_modules
+dist
+**/dist
+work
+**/__pycache__

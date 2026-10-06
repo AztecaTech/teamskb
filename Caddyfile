@@ -1,0 +1,27 @@
+{
+	servers {
+		timeouts {
+			read_body 30s
+			read_body_idle 10s 1024
+			read_header 10s
+			write_idle 180s
+			idle 60s
+		}
+	}
+}
+
+{$PUBLIC_ORIGIN} {
+	encode zstd gzip
+	request_body {
+		max_size 2MiB
+	}
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft"
+	}
+	@teams path /api/messages /api/messages/* /auth/*
+	reverse_proxy @teams gateway:3978
+	reverse_proxy app:8080
+}

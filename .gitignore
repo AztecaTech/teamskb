@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+!.env.dokploy.example
+secrets/
+teams/*.zip
+data/
+work/
+node_modules/
+dist/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.tsbuildinfo
+__pycache__/
+.pytest_cache/
