@@ -1,5 +1,11 @@
+param([switch]$TabOnly)
 $ErrorActionPreference = 'Stop'
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+# Dokploy discovers services before resolving Compose includes.
+if ([IO.File]::ReadAllText((Join-Path $repository 'compose.dokploy.yaml')) -ne
+    [IO.File]::ReadAllText((Join-Path $repository 'docker-compose.yml'))) {
+  throw 'Both Dokploy Compose entry points must contain the same direct service definitions.'
+}
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $scratch = Join-Path $tempRoot ("iqkb-single-" + [Guid]::NewGuid().ToString('N'))
 $project = "iqkb-single-" + [Guid]::NewGuid().ToString('N').Substring(0,12)
@@ -35,10 +41,14 @@ BRIDGE_HMAC_KEY=2222222222222222222222222222222222222222222222222222222222222222
 MSAL_CACHE_KEY_HEX=3333333333333333333333333333333333333333333333333333333333333333
 POSTGRES_DSN=postgres://db.example.test:5432/company?sslmode=verify-full
 '@
+  if ($TabOnly) {
+    $dummyEnv = $dummyEnv -replace '(?m)^BOT_CLIENT_ID=.*\r?\n', '' -replace '(?m)^BOT_CLIENT_SECRET=.*\r?\n', '' -replace '(?m)^TEAMS_APP_ID=.*\r?\n', ''
+    $dummyEnv += "`nBOT_ENABLED=false`n"
+  }
   [IO.File]::WriteAllText((Join-Path $scratch '.env'), $dummyEnv)
   $sourcePath = $repository.Replace('\','/')
   $probePath = (Join-Path $repository 'scripts/single-container-probe.py').Replace('\','/')
-  $yaml = [IO.File]::ReadAllText((Join-Path $repository 'compose.dokploy.yaml'))
+  $yaml = [IO.File]::ReadAllText((Join-Path $repository 'docker-compose.yml'))
   $yaml = $yaml.Replace('context: .', "context: '$sourcePath'")
   $yaml = $yaml.Replace('expose: ["8088"]', 'ports: ["127.0.0.1::8088"]')
   $yaml = $yaml.Replace('      - app_data:', "      - '${probePath}:/probe.py:ro'`n      - app_data:")

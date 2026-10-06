@@ -18,6 +18,6 @@ Teams bot SSO is documented for personal and group chat, not channel scope. Chan
 
 ## Local development
 
-For a single container managed by Dokploy, use `compose.dokploy.yaml` and follow `docs/DOKPLOY.md`. Configuration is injected from Dokploy's `.env`; the original `compose.yaml` keeps the separate-container deployment with file-mounted secrets.
+For a single container managed by Dokploy, deploy the GitHub repository's `master` branch in Docker Compose mode with `./docker-compose.yml` and follow `docs/DOKPLOY.md`. Configuration is injected from Dokploy's `.env`; the original `compose.yaml` keeps the separate-container deployment with file-mounted secrets.
 
 See `docs/SETUP.md` and `docs/PHASE-C-VALIDATION.md` for configuration, implementation evidence, and remaining release gates. Compose exposes only Caddy. Secrets and encryption keys are mounted as files outside persistent data volumes.

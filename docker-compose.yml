@@ -1,0 +1,45 @@
+# Dokploy: Compose mode, domain -> service iqkb, port 8088, HTTPS enabled.
+services:
+  iqkb:
+    image: iq-kbteams-single:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    # The existing gateway calls app:8080; in this image it is loopback only.
+    extra_hosts:
+      - "app:127.0.0.1"
+    expose: ["8088"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    # Root launcher creates/chowns runtime paths and drops child identities.
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE, SETUID, SETGID, KILL]
+    mem_limit: ${IQKB_MEM_LIMIT:-2560m}
+    cpus: ${IQKB_CPUS:-3.0}
+    pids_limit: 256
+    stop_grace_period: 20s
+    tmpfs:
+      - /run:size=16m,noexec,nosuid,nodev
+      - /tmp:size=64m,noexec,nosuid,nodev,mode=1777
+    volumes:
+      - app_data:/var/lib/iqkb
+      - gateway_cache:/var/lib/iqkb-msal
+    healthcheck:
+      test: ["CMD", "python", "/opt/iqkb/launcher.py", "health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_data:
+  gateway_cache:
