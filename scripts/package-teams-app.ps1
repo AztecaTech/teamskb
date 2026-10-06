@@ -1,7 +1,6 @@
 param(
   [Parameter(Mandatory)][string]$TeamsAppId,
-  [string]$BotClientId = '',
-  [switch]$TabOnly,
+  [Parameter(Mandatory)][string]$BotClientId,
   [Parameter(Mandatory)][string]$AppClientId,
   [Parameter(Mandatory)][string]$AppIdUri,
   [Parameter(Mandatory)][string]$PublicOrigin,
@@ -12,10 +11,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $guidPattern = '^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$'
-foreach ($item in @(@('TeamsAppId', $TeamsAppId), @('AppClientId', $AppClientId))) {
+foreach ($item in @(@('TeamsAppId', $TeamsAppId), @('BotClientId', $BotClientId), @('AppClientId', $AppClientId))) {
   if ($item[1] -notmatch $guidPattern) { throw "$($item[0]) must be a GUID." }
 }
-if ((-not $TabOnly -or $BotClientId) -and $BotClientId -notmatch $guidPattern) { throw 'BotClientId must be a GUID.' }
 
 $origin = $null
 if (-not [Uri]::TryCreate($PublicOrigin, [UriKind]::Absolute, [ref]$origin) -or
@@ -35,12 +33,7 @@ if (-not [Uri]::TryCreate($AppIdUri, [UriKind]::Absolute, [ref]$appResource) -or
   throw 'AppIdUri must be a valid absolute api:// resource URI.'
 }
 $expectedAppIdUri = "api://$($origin.DnsSafeHost.ToLowerInvariant())/botid-$($BotClientId.ToLowerInvariant())"
-if ($TabOnly) {
-  if ($appResource.DnsSafeHost -cne $origin.DnsSafeHost.ToLowerInvariant() -or
-      $appResource.AbsolutePath -notmatch ('^/(?:botid-)?' + $guidPattern.Substring(1))) {
-    throw 'AppIdUri must be on the public hostname with an API or bot registration GUID.'
-  }
-} elseif ($AppIdUri -cne $expectedAppIdUri) {
+if ($AppIdUri -cne $expectedAppIdUri) {
   throw "For this bot-and-tab app, AppIdUri must be '$expectedAppIdUri' (Microsoft bot SSO format)."
 }
 
@@ -70,8 +63,7 @@ if (-not (Test-PngSize $colorPath 192) -or -not (Test-PngSize $outlinePath 32)) 
 
 $parsedManifest = [System.IO.File]::ReadAllText($templatePath) | ConvertFrom-Json
 $parsedManifest.id = $TeamsAppId.ToLowerInvariant()
-if ($TabOnly) { $parsedManifest.PSObject.Properties.Remove('bots') }
-else { $parsedManifest.bots[0].botId = $BotClientId.ToLowerInvariant() }
+$parsedManifest.bots[0].botId = $BotClientId.ToLowerInvariant()
 $parsedManifest.staticTabs[0].contentUrl = "$($PublicOrigin.TrimEnd('/'))/"
 $parsedManifest.staticTabs[0].websiteUrl = "$($PublicOrigin.TrimEnd('/'))/"
 $parsedManifest.developer.websiteUrl = $PublicOrigin.TrimEnd('/')
@@ -83,7 +75,7 @@ $parsedManifest.webApplicationInfo.resource = $AppIdUri
 $schemaMatch = [regex]::Match([string]$parsedManifest.'$schema', '^https://developer\.microsoft\.com/json-schemas/teams/v(\d+\.\d+)/MicrosoftTeams\.schema\.json$')
 if (-not $schemaMatch.Success -or $parsedManifest.manifestVersion -ne $schemaMatch.Groups[1].Value -or
     $parsedManifest.staticTabs[0].contentUrl -ne "$($PublicOrigin.TrimEnd('/'))/" -or
-    (-not $TabOnly -and (@($parsedManifest.bots[0].scopes | Where-Object { $_ -notin @('personal', 'groupChat', 'team') }).Count -gt 0))) {
+    (@($parsedManifest.bots[0].scopes | Where-Object { $_ -notin @('personal', 'groupChat', 'team') }).Count -gt 0)) {
   throw 'Generated Teams manifest failed its content checks.'
 }
 $manifest = $parsedManifest | ConvertTo-Json -Depth 32

@@ -29,16 +29,6 @@ try {
     throw 'Generated manifest IDs or SSO resource do not match the supplied values.'
   }
 
-  $tabPackage = Join-Path $scratch 'tab.zip'
-  & $packager -TabOnly -TeamsAppId $teamsAppId -AppClientId $appClientId `
-    -AppIdUri $appIdUri -PublicOrigin $origin -PrivacyUrl $privacyUrl -TermsOfUseUrl $termsUrl -OutputPath $tabPackage
-  $tabExpanded = Join-Path $scratch 'tab'
-  Expand-Archive -LiteralPath $tabPackage -DestinationPath $tabExpanded
-  $tabManifest = Get-Content -LiteralPath (Join-Path $tabExpanded 'manifest.json') -Raw | ConvertFrom-Json
-  if ($tabManifest.PSObject.Properties.Name -contains 'bots' -or $tabManifest.webApplicationInfo.resource -ne $appIdUri) {
-    throw 'Tab-only package must omit bots and preserve the configured SSO resource.'
-  }
-
   $rejected = $false
   try {
     & $packager -TeamsAppId $teamsAppId -BotClientId $botClientId -AppClientId $appClientId `

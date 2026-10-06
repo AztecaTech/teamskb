@@ -33,9 +33,7 @@ def environment(names, **fixed):
 
 
 def main():
-    required = "PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_CLIENT_SECRET BOOTSTRAP_SECRET MODEL_API_KEY APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY MSAL_CACHE_KEY_HEX"
-    if os.environ.get("BOT_ENABLED") != "false":
-        required += " BOT_CLIENT_ID TEAMS_APP_ID BOT_CLIENT_SECRET"
+    required = "PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID BOT_CLIENT_ID TEAMS_APP_ID APP_CLIENT_SECRET BOT_CLIENT_SECRET BOOTSTRAP_SECRET MODEL_API_KEY APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY MSAL_CACHE_KEY_HEX"
     missing = [name for name in required.split() if not os.environ.get(name, "").strip()]
     if missing:
         raise RuntimeError("missing environment variables: " + ", ".join(missing))
@@ -80,7 +78,7 @@ def main():
         os.chown("/run/parser/parser.sock", PARSER_UID, APP_UID)
         os.chmod("/run/parser/parser.sock", 0o660)
         start(["node", "/opt/iqkb/gateway/dist/server.js"], APP_UID,
-              environment("BOT_ENABLED TENANT_ID APP_CLIENT_ID BOT_CLIENT_ID TEAMS_APP_ID PUBLIC_ORIGIN APP_CLIENT_SECRET BOT_CLIENT_SECRET MSAL_CACHE_KEY_HEX OAUTH_CONNECTION_NAME",
+              environment("TENANT_ID APP_CLIENT_ID BOT_CLIENT_ID TEAMS_APP_ID PUBLIC_ORIGIN APP_CLIENT_SECRET BOT_CLIENT_SECRET MSAL_CACHE_KEY_HEX OAUTH_CONNECTION_NAME",
                           NODE_ENV="production", PORT="3978", HTTP_LISTEN_HOST="127.0.0.1", OBO_SOCKET="/run/iqkb/obo.sock"))
         start(["iqkb"], APP_UID,
               environment("PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY BOOTSTRAP_SECRET MODEL_API_KEY POSTGRES_DSN MODEL_MONTHLY_ATTEMPT_LIMIT AUDIT_RETENTION_DAYS",

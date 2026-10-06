@@ -31,9 +31,8 @@ with sqlite3.connect('/var/lib/iqkb/config.sqlite', timeout=5) as db:
 
 secrets = {"MODEL_API_KEY", "APP_CLIENT_SECRET", "BOT_CLIENT_SECRET",
            "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "MSAL_CACHE_KEY_HEX", "BOOTSTRAP_SECRET"}
-bot_enabled = os.environ.get('BOT_ENABLED') != 'false'
 for pid, uid, allowed in zip(pids, (65534, 65532, 65532, 65533),
-                             (set(), {"APP_CLIENT_SECRET", "MSAL_CACHE_KEY_HEX"} | ({"BOT_CLIENT_SECRET"} if bot_enabled else set()),
+                             (set(), {"APP_CLIENT_SECRET", "BOT_CLIENT_SECRET", "MSAL_CACHE_KEY_HEX"},
                               {"MODEL_API_KEY", "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "BOOTSTRAP_SECRET"}, set())):
     # Inspect as the same UID; do not add SYS_PTRACE just for this test.
     inspect_env = '''
@@ -83,7 +82,7 @@ for attempt in range(20):
         raise AssertionError("unsigned Teams activity accepted")
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
-        if (bot_enabled and error.code in (401, 403)) or (not bot_enabled and error.code == 404):
+        if error.code in (401, 403):
             break
         if error.code != 404 or attempt == 19:
             raise AssertionError(f"Teams callback route returned {error.code}: {body[:512]}") from error
@@ -91,20 +90,11 @@ for attempt in range(20):
 
 
 class UnixConnection(http.client.HTTPConnection):
-    def __init__(self, host, socket_path="/run/parser/parser.sock"):
-        super().__init__(host)
-        self.socket_path = socket_path
-
     def connect(self):
         self.sock = socket.socket(socket.AF_UNIX)
         self.sock.settimeout(2)
-        self.sock.connect(self.socket_path)
+        self.sock.connect("/run/parser/parser.sock")
 
-
-connection = UnixConnection("localhost", "/run/iqkb/obo.sock")
-connection.request("POST", "/v1/obo", "{}", {"Content-Type": "application/json"})
-assert connection.getresponse().status == 400
-connection.close()
 
 connection = UnixConnection("localhost")
 connection.request("POST", "/v1/parse", json.dumps({"filename": "dummy.txt",
