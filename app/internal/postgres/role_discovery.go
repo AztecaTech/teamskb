@@ -12,9 +12,10 @@ type ExecutionRole struct {
 	Policies int    `json:"policies"`
 }
 type RoleDiscovery struct {
-	ApplicationRoles []string        `json:"applicationRoles"`
-	ExecutionRoles   []ExecutionRole `json:"executionRoles"`
-	Truncated        bool            `json:"truncated"`
+	ApplicationRoles []string            `json:"applicationRoles"`
+	ExecutionRoles   []ExecutionRole     `json:"executionRoles"`
+	Truncated        bool                `json:"truncated"`
+	Permissions      PermissionDiscovery `json:"permissions"`
 }
 
 func (c *Connector) DiscoverRoleMappings(ctx context.Context, schema, relation, column string) (RoleDiscovery, error) {
@@ -76,6 +77,10 @@ func (c *Connector) DiscoverRoleMappings(ctx context.Context, schema, relation, 
 	rows.Close()
 	if err != nil || rowErr != nil {
 		return result, errors.Join(err, rowErr)
+	}
+	result.Permissions, err = discoverPermissionStructure(ctx, tx, schema, relation)
+	if err != nil {
+		return result, &AuthorizationDiscoveryError{Stage: "permissions", Cause: err}
 	}
 	return result, tx.Commit(ctx)
 }

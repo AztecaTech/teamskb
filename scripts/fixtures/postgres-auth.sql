@@ -26,6 +26,9 @@ CREATE VIEW iqkb_auth.external_members AS SELECT user_id AS id,email,database_ro
 GRANT SELECT ON iqkb_auth.external_members TO iqkb_service;
 CREATE VIEW iqkb_auth.permission_directory AS SELECT user_id AS id,email,CASE WHEN user_id='alex' THEN 'Reader' ELSE 'Editor' END AS role,active AS enabled FROM iqkb_auth.users WHERE email IN ('app-alex@example.com','app-blair@example.com');
 GRANT SELECT ON iqkb_auth.permission_directory TO iqkb_service;
+CREATE TABLE iqkb_auth.capability_catalog(id integer PRIMARY KEY,role_name text);
+CREATE TABLE iqkb_auth.assignment_rules(id integer PRIMARY KEY,role_id integer REFERENCES iqkb_auth.capability_catalog(id),permission_name text,team_scope text);
+GRANT SELECT ON iqkb_auth.capability_catalog,iqkb_auth.assignment_rules TO iqkb_service;
 CREATE SCHEMA iqkb_data;
 GRANT USAGE ON SCHEMA iqkb_data TO iqkb_alex,iqkb_blair,iqkb_application,iqkb_service;
 CREATE TABLE iqkb_data.documents(id text PRIMARY KEY,title text,content text,source_url text,owner_id text);
@@ -39,3 +42,5 @@ CREATE TABLE iqkb_data.service_secret(id text);
 GRANT SELECT ON iqkb_data.service_secret TO iqkb_service;
 CREATE TABLE iqkb_data.owner_table(id text);
 ALTER TABLE iqkb_data.owner_table OWNER TO iqkb_owner;
+
+GRANT SELECT(id) ON iqkb_data.documents TO iqkb_service;

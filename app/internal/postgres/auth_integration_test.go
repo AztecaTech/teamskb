@@ -26,6 +26,30 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	if err != nil || len(discovered.ApplicationRoles) != 2 {
 		t.Fatalf("role discovery failed: %#v %v", discovered, err)
 	}
+	permissionTableFound, relationshipFound, policyFound := false, false, false
+	for _, table := range discovered.Permissions.Relations {
+		if table.Relation == "assignment_rules" {
+			permissionTableFound = true
+		}
+	}
+	for _, link := range discovered.Permissions.Relationships {
+		if link.SourceRelation == "assignment_rules" && link.TargetRelation == "capability_catalog" {
+			relationshipFound = true
+		}
+	}
+	// The service has column SELECT grants on documents, not full-table SELECT.
+	// Policy discovery must account for those readable columns too.
+	for _, policy := range discovered.Permissions.Policies {
+		if policy.Relation == "documents" {
+			policyFound = true
+		}
+	}
+	if !permissionTableFound || !relationshipFound {
+		t.Fatalf("permission graph missing: %#v", discovered.Permissions)
+	}
+	if !policyFound {
+		t.Fatal("readable policy definitions were not discovered")
+	}
 	for _, role := range discovered.ExecutionRoles {
 		if role.Name == "postgres" || role.Name == "iqkb_unsafe" || role.Name == "iqkb_owner" {
 			t.Fatalf("unsafe discovery choice: %s", role.Name)
