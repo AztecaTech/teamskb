@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"iq-kbteams/internal/httpx"
 	"iq-kbteams/internal/identity"
@@ -62,6 +63,20 @@ func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Co
 
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/postgres/auth/discovery", func(w http.ResponseWriter, r *http.Request) {
+		if !pg.SharedCredentialsConfigured() {
+			jsonResponse(w, http.StatusConflict, `{"error":"shared_database_credentials_required"}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		result, err := pg.DiscoverAuthorization(ctx, r.URL.Query().Get("afterSchema"), r.URL.Query().Get("afterName"))
+		if err != nil {
+			jsonResponse(w, http.StatusFailedDependency, `{"error":"authorization_metadata_discovery_failed"}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
 	mux.HandleFunc("GET /api/admin/postgres/auth", func(w http.ResponseWriter, r *http.Request) {
 		adapter, err := loadPostgresAdapter(db)
 		if err != nil {

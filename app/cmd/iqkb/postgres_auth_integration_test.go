@@ -44,6 +44,9 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		return rec
 	}
 	authHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresAuthHandler(db, key, pg))
+	if rec := request(authHandler, "GET", "/api/admin/postgres/auth/discovery", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ready":true`) || strings.Contains(rec.Body.String(), "app-alex@example.com") {
+		t.Fatalf("bootstrap discovery=%d %s", rec.Code, rec.Body.String())
+	}
 	body := `{"mode":"session_context","schema":"iqkb_auth","relation":"users","approvalRecord":"fixture-review"}`
 	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", body); rec.Code != 200 {
 		t.Fatalf("save adapter=%d %s", rec.Code, rec.Body.String())
@@ -52,6 +55,9 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		t.Fatalf("check=%d %s", rec.Code, rec.Body.String())
 	}
 	denied := authenticate(fixedTokenVerifier{blair}, db, true, postgresAuthHandler(db, key, pg))
+	if rec := request(denied, "GET", "/api/admin/postgres/auth/discovery", ""); rec.Code != 403 {
+		t.Fatal("non-admin bootstrap discovery allowed")
+	}
 	if rec := request(denied, "PUT", "/api/admin/postgres/auth", body); rec.Code != 403 {
 		t.Fatal("non-admin adapter edit allowed")
 	}

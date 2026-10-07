@@ -21,7 +21,13 @@ rules have filtered them.
 3. Provide the authorization view described below. Existing users and permissions
    are authoritative; the app neither creates users nor grants database privileges.
 4. In **Workspace settings → Sources → PostgreSQL**, choose the permission
-   system, enter the view schema/name and DBA review reference, then select
+   system and select **Detect user mapping and prefill**. This administrator-only
+   step reads metadata through the shared service connection before an adapter
+   or user email mapping exists. One complete candidate prefills an empty draft;
+   multiple candidates require selection. Complete pagination before accepting
+   automatic selection. Ordinary user tables missing adapter fields are listed
+   as incomplete rather than being treated as permission mappings. Review the
+   detected schema/name and enter the DBA review reference, then select
    **Save and check my access**. No user password is needed in shared mode.
 5. Review the query catalog or business profiles, test each profile with two
    distinct database users, and activate PostgreSQL search.
@@ -29,6 +35,12 @@ rules have filtered them.
 Without service credentials the previous individual PostgreSQL-login mode remains
 available. Adding service credentials requires an adapter; it never enables
 unrestricted service-account searches automatically.
+
+After authorization, **Discover accessible schema** supplies content relations to
+the approved-query form. Selecting a compatible relation prefills its query ID,
+description and parameterized SQL, provided all four contract columns are present.
+Existing drafts are preserved. Detection never invents approval records or saves
+queries automatically; use the normal review and save actions.
 
 ## Authorization view contract
 
