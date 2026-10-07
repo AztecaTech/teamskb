@@ -14,16 +14,42 @@ import (
 // AdapterConfig points at a DBA-maintained view of the external auth system.
 // Only this view translates external roles; clients never supply their role.
 type AdapterConfig struct {
-	Mode           string `json:"mode"`
-	Schema         string `json:"schema"`
-	Relation       string `json:"relation"`
-	ApprovalRecord string `json:"approvalRecord"`
+	Mode           string                `json:"mode"`
+	Schema         string                `json:"schema"`
+	Relation       string                `json:"relation"`
+	ApprovalRecord string                `json:"approvalRecord"`
+	Columns        *AuthorizationColumns `json:"columns,omitempty"`
+	TenantScope    string                `json:"tenantScope,omitempty"`
+}
+
+type AuthorizationColumns struct {
+	Email             string `json:"email"`
+	UserID            string `json:"userId"`
+	Role              string `json:"role"`
+	Active            string `json:"active"`
+	TenantID          string `json:"tenantId,omitempty"`
+	PermissionVersion string `json:"permissionVersion,omitempty"`
 }
 
 type Subject struct{ TenantID, ObjectID, Email string }
 type ResolvedIdentity struct{ UserID, Role, PermissionVersion string }
 
 func (a AdapterConfig) Validate() error {
+	if a.Columns != nil {
+		for _, column := range []string{a.Columns.Email, a.Columns.UserID, a.Columns.Role, a.Columns.Active} {
+			if !ValidDatabaseIdentity(column) {
+				return errors.New("invalid authorization column mapping")
+			}
+		}
+		for _, column := range []string{a.Columns.TenantID, a.Columns.PermissionVersion} {
+			if column != "" && !ValidDatabaseIdentity(column) {
+				return errors.New("invalid authorization column mapping")
+			}
+		}
+		if a.Columns.TenantID == "" && a.TenantScope == "" {
+			return errors.New("single-tenant mapping requires a trusted tenant scope")
+		}
+	}
 	if (a.Mode != "postgres_role" && a.Mode != "session_context") || !ValidDatabaseIdentity(a.Schema) || !ValidDatabaseIdentity(a.Relation) || strings.TrimSpace(a.ApprovalRecord) == "" || len(a.ApprovalRecord) > 200 {
 		return errors.New("invalid authorization adapter")
 	}
@@ -43,6 +69,9 @@ func (c *Connector) SharedCredentialsConfigured() bool {
 func (c *Connector) ForSubject(a AdapterConfig, subject Subject) (*Connector, error) {
 	if a.Validate() != nil || !c.SharedCredentialsConfigured() || subject.TenantID == "" || subject.ObjectID == "" || !strings.Contains(subject.Email, "@") {
 		return nil, errors.New("database adapter, shared credentials, and trusted email are required")
+	}
+	if a.Columns != nil && a.Columns.TenantID == "" && subject.TenantID != a.TenantScope {
+		return nil, errors.New("database mapping belongs to a different tenant")
 	}
 	copy := *c
 	copy.adapter, copy.subject = &a, &subject
@@ -99,7 +128,21 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		return fail(err)
 	}
 	relation := pgx.Identifier{c.adapter.Schema, c.adapter.Relation}.Sanitize()
-	rows, err := tx.Query(ctx, `SELECT user_id::text,database_role::text,permission_version::text,active FROM `+relation+` WHERE tenant_id::text=$1 AND lower(btrim(email::text))=$2 LIMIT 2`, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
+	columns := AuthorizationColumns{UserID: "user_id", Role: "database_role", PermissionVersion: "permission_version", Active: "active", TenantID: "tenant_id", Email: "email"}
+	if c.adapter.Columns != nil {
+		columns = *c.adapter.Columns
+	}
+	quote := func(name string) string { return "u." + pgx.Identifier{name}.Sanitize() }
+	tenant := "$1::text"
+	if columns.TenantID != "" {
+		tenant = quote(columns.TenantID) + "::text"
+	}
+	version := "md5(to_jsonb(u)::text)"
+	if columns.PermissionVersion != "" {
+		version = quote(columns.PermissionVersion) + "::text"
+	}
+	lookup := `SELECT ` + quote(columns.UserID) + `::text,` + quote(columns.Role) + `::text,` + version + `,` + quote(columns.Active) + `::boolean FROM ` + relation + ` u WHERE ` + tenant + `=$1::text AND lower(btrim(` + quote(columns.Email) + `::text))=$2 LIMIT 2`
+	rows, err := tx.Query(ctx, lookup, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
 	if err != nil {
 		return fail(errors.New("database user lookup failed"))
 	}

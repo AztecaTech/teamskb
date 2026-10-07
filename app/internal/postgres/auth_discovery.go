@@ -94,7 +94,6 @@ WHERE (c.table_schema,c.table_name)>=($1,$2) AND (c.table_schema,c.table_name)<=
 AND EXISTS (SELECT 1 FROM information_schema.columns e WHERE e.table_schema=c.table_schema AND e.table_name=c.table_name
 AND lower(replace(e.column_name,'_','')) IN ('email','emailaddress','useremail','mail','primaryemail')
 AND has_column_privilege(current_user,quote_ident(e.table_schema)||'.'||quote_ident(e.table_name),e.column_name,'SELECT'))
-AND lower(replace(c.column_name,'_','')) IN ('email','emailaddress','useremail','mail','primaryemail','id','userid','accountid','role','rolename','roleid','databaserole','postgresrole','dbrole','tenantid','organizationid','active','isactive','enabled','permissionversion','permissionsversion','authversion')
 AND has_column_privilege(current_user,quote_ident(c.table_schema)||'.'||quote_ident(c.table_name),c.column_name,'SELECT')
 ORDER BY c.table_schema,c.table_name,c.ordinal_position LIMIT $5`, first.Schema, first.Name, last.Schema, last.Name, maxDiscoveryColumns+1)
 		if err != nil {

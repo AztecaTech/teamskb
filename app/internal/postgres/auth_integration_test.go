@@ -22,6 +22,24 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	adapter := AdapterConfig{Mode: "postgres_role", Schema: "iqkb_auth", Relation: "users", ApprovalRecord: "fixture-review"}
 	tool := validTool()
 	tool.SQL = `SELECT id::text AS id,title::text AS title,content::text AS content,source_url::text AS source_url FROM iqkb_data.documents WHERE title ILIKE '%' || $1 || '%' ORDER BY id LIMIT $2`
+	mapped := AdapterConfig{Mode: "postgres_role", Schema: "iqkb_auth", Relation: "external_members", ApprovalRecord: "fixture-mapping", TenantScope: "tenant-one", Columns: &AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}}
+	for _, user := range []string{"alex", "blair"} {
+		scope, err := connector.ForSubject(mapped, Subject{TenantID: "tenant-one", ObjectID: user, Email: user + "@example.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs, err := scope.Search(t.Context(), "adapter_user", "adapter", "Policy", 5, tool)
+		if err != nil || len(docs) != 1 || docs[0].ID != user+"-doc" {
+			t.Fatalf("mapped columns lost isolation: %#v %v", docs, err)
+		}
+		resolved, err := scope.ResolveIdentity(t.Context(), "adapter_user", "adapter")
+		if err != nil || resolved.PermissionVersion == "" {
+			t.Fatalf("missing derived permission version: %v", err)
+		}
+	}
+	if _, err := connector.ForSubject(mapped, Subject{TenantID: "different-tenant", ObjectID: "alex", Email: "alex@example.com"}); err == nil {
+		t.Fatal("single-tenant mapping accepted another tenant")
+	}
 	for _, mode := range []string{"postgres_role", "session_context"} {
 		adapter.Mode = mode
 		for _, user := range []string{"alex", "blair", "alex"} {

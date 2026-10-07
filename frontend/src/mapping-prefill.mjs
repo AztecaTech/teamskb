@@ -1,7 +1,33 @@
+export function candidateColumnMapping(candidate) {
+  const fields = candidate.columns ?? [];
+  const find = (aliases, boolean = false) => {
+    for (const alias of aliases) {
+      const matches = fields.filter((field) => field.name.toLowerCase().replaceAll('_', '') === alias && (!boolean || field.dataType === 'boolean'));
+      if (matches.length > 1) return undefined;
+      if (matches.length === 1) return matches[0].name;
+    }
+    return undefined;
+  };
+  const mapping = {
+    email: find(['email', 'emailaddress', 'useremail', 'mail', 'primaryemail']),
+    userId: find(['userid', 'id', 'accountid']),
+    role: find(['databaserole', 'postgresrole', 'dbrole', 'role', 'rolename']),
+    active: find(['active', 'isactive', 'enabled'], true),
+    tenantId: find(['tenantid', 'organizationid']),
+    permissionVersion: find(['permissionversion', 'permissionsversion', 'authversion']),
+  };
+  return mapping.email && mapping.userId && mapping.role && mapping.active ? mapping : null;
+}
+
 export function authorizationPrefill(current, candidates, complete) {
+  if (!complete || current.schema || current.relation) return current;
   const ready = candidates.filter((candidate) => candidate.ready);
-  if (!complete || ready.length !== 1 || current.schema || current.relation) return current;
-  return { ...current, schema: ready[0].schema, relation: ready[0].relation };
+  const mapped = candidates.filter((candidate) => candidateColumnMapping(candidate));
+  const choices = ready.length ? ready : mapped;
+  if (choices.length !== 1) return current;
+  const candidate = choices[0];
+  return { ...current, schema: candidate.schema, relation: candidate.relation,
+    ...(candidate.ready ? {} : { columns: candidateColumnMapping(candidate) }) };
 }
 
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;

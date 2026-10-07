@@ -98,6 +98,12 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 	mux.HandleFunc("PUT /api/admin/postgres/auth", func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioReadRequest(r)
 		adapter, decodeErr := httpx.DecodeOne[postgres.AdapterConfig](body)
+		if adapter.Columns != nil {
+			adapter.TenantScope = ""
+			if adapter.Columns.TenantID == "" {
+				adapter.TenantScope = r.Context().Value(identityContextKey{}).(identity.Principal).TenantID
+			}
+		}
 		if err != nil || decodeErr != nil || adapter.Validate() != nil {
 			jsonResponse(w, 400, `{"error":"invalid_adapter"}`)
 			return

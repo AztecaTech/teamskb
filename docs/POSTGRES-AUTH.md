@@ -24,6 +24,10 @@ For a PostgreSQL service without TLS on the same private Dokploy network, explic
 
 For an externally published PostgreSQL endpoint without TLS, explicitly set `POSTGRES_CONNECTION_MODE=external_plaintext` and use `POSTGRES_DSN=postgresql://USER:PASSWORD@EXTERNAL_HOST:PUBLISHED_PORT/DATABASE?sslmode=disable`. This accepts external hostnames and public IP addresses using the configured published port. Database credentials and traffic are sent without encryption. It does not automatically downgrade a TLS connection. The same email mapping, execution role, and row-policy checks apply in all three modes.
 
+Mapping discovery uses metadata column names and types, rather than a fixed table name. A unique candidate with recognizable email, user ID, role, and boolean account-status columns prefills an editable column mapping. Common aliases such as `id`, `role`, and `enabled` are supported; multiple matching candidates require administrator selection. Business tables with only an email column do not qualify automatically. Existing mapping drafts are preserved.
+
+An explicit column mapping can use the source relation directly instead of creating the canonical six-column authorization view. If no tenant column exists, saving binds the mapping to the signed-in administrator's Microsoft tenant on the server; other tenants are rejected. If no permission-version column exists, a hash of the mapped user record provides change detection for profile evidence. The role value must still name an allowed PostgreSQL execution role granted to the service login; application role labels alone do not establish database permissions. Custom column names remain editable, and permission review is required before saving.
+
 The shared connection in Dokploy supplies database credentials, not a user's
 permissions. IQ Knowledge resolves the signed-in Teams member's directory email,
 looks up one database identity, and applies its restricted PostgreSQL role inside
