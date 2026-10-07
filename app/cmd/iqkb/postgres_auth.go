@@ -142,12 +142,12 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
 		scoped, login, password, err := postgresAccess(r.Context(), db, key, pg, principal)
 		if err != nil {
-			jsonResponse(w, 409, `{"error":"database_identity_resolution_required"}`)
+			writeJSON(w, 409, map[string]string{"error": postgresAccessFailureCode(err, "database_identity_resolution_required")})
 			return
 		}
 		resolved, err := scoped.ResolveIdentity(r.Context(), login, password)
 		if err != nil {
-			jsonResponse(w, 424, `{"error":"database_authorization_check_failed"}`)
+			writeJSON(w, 424, map[string]string{"error": postgres.AuthorizationFailureCode(err)})
 			return
 		}
 		writeJSON(w, 200, map[string]any{"status": "connected", "userId": resolved.UserID, "databaseRole": resolved.Role})

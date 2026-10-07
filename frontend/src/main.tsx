@@ -537,7 +537,23 @@ function App() {
       setAdminMessage('Adapter saved. Checking your database identity…');
       const check = await api('/api/admin/postgres/auth/check', { method: 'POST' });
       await refreshDatabaseIdentity();
-      if (!check.ok) throw new Error('Adapter saved, but your user could not be authorized. Check User.Read consent, the adapter view, your email match, and database role grants.');
+      if (!check.ok) {
+        const failure = await check.json() as { error?: string };
+        const advice: Record<string, string> = {
+          unsafe_service_login: 'The URI login is a superuser or has BYPASSRLS. Use a non-superuser service login with the required execution-role grants.',
+          postgres_verified_email_required: 'Microsoft has not supplied a verified organizational email. Check User.Read consent and your account profile.',
+          user_email_not_found: 'No database user matches your signed-in Microsoft email within this tenant mapping.',
+          user_email_ambiguous: 'More than one database user matches your email. Resolve the duplicate mapping.',
+          user_inactive: 'Your matched database account is disabled.',
+          user_mapping_query_failed: 'The mapped relation or columns cannot be queried. Check the saved column mapping and service SELECT permissions.',
+          user_mapping_values_invalid: 'The matched record has missing or incompatible values. Check user ID, role, and the boolean active column.',
+          execution_role_invalid: 'The mapped role is invalid or matches the service login. Map to a separate PostgreSQL execution role.',
+          execution_role_not_found: 'The user row matched, but its role value is not a PostgreSQL role. Application roles need an authorization adapter that translates them to a database execution role.',
+          execution_role_unsafe: 'The mapped role is a superuser or has BYPASSRLS and cannot enforce per-user access.',
+          execution_role_not_granted: 'The matched PostgreSQL execution role is not granted to the URI service login.',
+        };
+        throw new Error(`Adapter saved; access check failed (${failure.error || 'unknown'}). ${advice[failure.error || ''] || 'Check the database connection and authorization mapping.'}`);
+      }
       const result = await check.json() as { userId: string; databaseRole: string };
       setAdminMessage(`Connected as database user ${result.userId}, role ${result.databaseRole}. Profile tests must be rerun after adapter changes.`);
     } catch (error) { setAdminMessage(error instanceof Error ? error.message : 'Database adapter could not be checked.'); }

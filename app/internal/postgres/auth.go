@@ -34,6 +34,24 @@ type AuthorizationColumns struct {
 type Subject struct{ TenantID, ObjectID, Email string }
 type ResolvedIdentity struct{ UserID, Role, PermissionVersion string }
 
+type AuthorizationError struct {
+	Code  string
+	Cause error
+}
+
+func (e *AuthorizationError) Error() string { return e.Code }
+func (e *AuthorizationError) Unwrap() error { return e.Cause }
+func AuthorizationFailureCode(err error) string {
+	var failure *AuthorizationError
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	if errors.Is(err, ErrUnsafeDatabaseRole) {
+		return "unsafe_service_login"
+	}
+	return DiscoveryFailureCode(err)
+}
+
 func (a AdapterConfig) Validate() error {
 	if a.Columns != nil {
 		for _, column := range []string{a.Columns.Email, a.Columns.UserID, a.Columns.Role, a.Columns.Active} {
@@ -144,7 +162,7 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	lookup := `SELECT ` + quote(columns.UserID) + `::text,` + quote(columns.Role) + `::text,` + version + `,` + quote(columns.Active) + `::boolean FROM ` + relation + ` u WHERE ` + tenant + `=$1::text AND lower(btrim(` + quote(columns.Email) + `::text))=$2 LIMIT 2`
 	rows, err := tx.Query(ctx, lookup, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
 	if err != nil {
-		return fail(errors.New("database user lookup failed"))
+		return fail(&AuthorizationError{Code: "user_mapping_query_failed", Cause: err})
 	}
 	count := 0
 	active := false
@@ -156,12 +174,32 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	}
 	rowErr := rows.Err()
 	rows.Close()
-	if err != nil || rowErr != nil || count != 1 || !active || resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 || !ValidDatabaseIdentity(resolved.Role) || resolved.Role == c.service.User {
-		return fail(errors.New("database user is missing, inactive, ambiguous, or has an invalid role"))
+	if err != nil || rowErr != nil {
+		return fail(&AuthorizationError{Code: "user_mapping_values_invalid", Cause: errors.Join(err, rowErr)})
+	}
+	if count == 0 {
+		return fail(&AuthorizationError{Code: "user_email_not_found"})
+	}
+	if count != 1 {
+		return fail(&AuthorizationError{Code: "user_email_ambiguous"})
+	}
+	if !active {
+		return fail(&AuthorizationError{Code: "user_inactive"})
+	}
+	if resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 {
+		return fail(&AuthorizationError{Code: "user_mapping_values_invalid"})
+	}
+	if !ValidDatabaseIdentity(resolved.Role) || resolved.Role == c.service.User {
+		return fail(&AuthorizationError{Code: "execution_role_invalid"})
 	}
 	var unsafe bool
-	if err = tx.QueryRow(ctx, `SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=$1`, resolved.Role).Scan(&unsafe); err != nil || unsafe {
-		return fail(errors.New("database execution role is unsafe"))
+	if err = tx.QueryRow(ctx, `SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=$1`, resolved.Role).Scan(&unsafe); errors.Is(err, pgx.ErrNoRows) {
+		return fail(&AuthorizationError{Code: "execution_role_not_found"})
+	} else if err != nil {
+		return fail(&AuthorizationError{Code: "execution_role_check_failed", Cause: err})
+	}
+	if unsafe {
+		return fail(&AuthorizationError{Code: "execution_role_unsafe"})
 	}
 	if c.adapter.Mode == "session_context" {
 		var ownsTables bool
@@ -170,7 +208,7 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		}
 	}
 	if _, err = tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{resolved.Role}.Sanitize()); err != nil {
-		return fail(errors.New("database execution role is not granted to the service login"))
+		return fail(&AuthorizationError{Code: "execution_role_not_granted", Cause: err})
 	}
 	if _, err = tx.Exec(ctx, `SET LOCAL row_security = on`); err != nil {
 		return fail(err)
