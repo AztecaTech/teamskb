@@ -20,6 +20,8 @@ timings for catalog checks, selection, retrieval, and answer generation. The sta
 logs alone cannot diagnose search latency. No production speedup is claimed by the
 local fixture; model/provider and Microsoft latency still affect real requests.
 
+For a PostgreSQL service without TLS on the same private Dokploy network, explicitly set `POSTGRES_CONNECTION_MODE=private_network` and use `POSTGRES_DSN=postgresql://USER:PASSWORD@INTERNAL_DATABASE_HOST:5432/DATABASE?sslmode=disable`. Attach the app and database to the same private Docker network. Use Dokploy's internal database hostname and internal port, not the externally published endpoint. This mode sends database traffic without TLS and rejects public and link-local destination IPs at connection time. User mapping, role checks, read-only transactions, and row policies remain enforced. The default `POSTGRES_CONNECTION_MODE=verify_full` continues to require verified TLS. Changing only `sslmode=disable` while keeping the default mode is rejected during startup.
+
 The shared connection in Dokploy supplies database credentials, not a user's
 permissions. IQ Knowledge resolves the signed-in Teams member's directory email,
 looks up one database identity, and applies its restricted PostgreSQL role inside

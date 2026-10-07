@@ -49,7 +49,11 @@ type Connector struct {
 	metadataOnly      bool
 }
 
-func Open(_ context.Context, connectionString string) (*Connector, error) {
+func Open(ctx context.Context, connectionString string) (*Connector, error) {
+	return OpenWithMode(ctx, connectionString, "verify_full")
+}
+
+func OpenWithMode(_ context.Context, connectionString, mode string) (*Connector, error) {
 	if strings.TrimSpace(connectionString) == "" || len(connectionString) > 4096 || strings.ContainsAny(connectionString, "\r\n\x00") {
 		return nil, errors.New("invalid PostgreSQL connection template")
 	}
@@ -57,8 +61,18 @@ func Open(_ context.Context, connectionString string) (*Connector, error) {
 	if err != nil {
 		return nil, errors.New("invalid PostgreSQL connection template")
 	}
-	if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName == "" {
-		return nil, errors.New("PostgreSQL requires TLS with certificate and hostname verification (sslmode=verify-full)")
+	switch mode {
+	case "", "verify_full":
+		if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName == "" {
+			return nil, errors.New("PostgreSQL requires sslmode=verify-full; for a private Dokploy network explicitly set POSTGRES_CONNECTION_MODE=private_network and sslmode=disable")
+		}
+	case "private_network":
+		if config.TLSConfig != nil || len(config.Fallbacks) != 0 || strings.HasPrefix(config.Host, "/") {
+			return nil, errors.New("private_network PostgreSQL mode requires a TCP URI with sslmode=disable")
+		}
+		config.DialFunc = dialPrivatePostgres
+	default:
+		return nil, errors.New("POSTGRES_CONNECTION_MODE must be verify_full or private_network")
 	}
 	service := config.Copy()
 	config.User, config.Password = "", ""

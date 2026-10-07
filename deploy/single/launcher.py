@@ -86,7 +86,7 @@ def main():
                           BOT_ENABLED="true" if bot_enabled else "false",
                           NODE_ENV="production", PORT="3978", HTTP_LISTEN_HOST="127.0.0.1", OBO_SOCKET="/run/iqkb/obo.sock"))
         start(["iqkb"], APP_UID,
-              environment("PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY BOOTSTRAP_SECRET MODEL_API_KEY POSTGRES_DSN MODEL_MONTHLY_ATTEMPT_LIMIT AUDIT_RETENTION_DAYS",
+              environment("PUBLIC_ORIGIN TENANT_ID ADMIN_OBJECT_ID APP_CLIENT_ID APP_ENCRYPTION_KEY BRIDGE_HMAC_KEY BOOTSTRAP_SECRET MODEL_API_KEY POSTGRES_DSN POSTGRES_CONNECTION_MODE MODEL_MONTHLY_ATTEMPT_LIMIT AUDIT_RETENTION_DAYS",
                           HTTP_LISTEN_ADDR="127.0.0.1:8080", SQLITE_PATH="/var/lib/iqkb/config.sqlite",
                           BRIDGE_SOCKET="/run/iqkb/bridge.sock", OBO_SOCKET="/run/iqkb/obo.sock", PARSER_SOCKET="/run/parser/parser.sock"))
         start(["caddy", "run", "--config", "/opt/iqkb/Caddyfile", "--adapter", "caddyfile"], PROXY_UID, BASE)

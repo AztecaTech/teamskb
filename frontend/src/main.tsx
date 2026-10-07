@@ -489,6 +489,7 @@ function App() {
           unsafe_database_login: 'The URI login is a PostgreSQL superuser or has BYPASSRLS. Use a dedicated non-superuser service login without BYPASSRLS so user permissions can be enforced.',
           database_authentication_failed: 'PostgreSQL rejected the URI credentials or authentication rules. Check the username/password and connection access rules; URL-encode special characters in the password.',
           database_not_found: 'The database named in POSTGRES_DSN does not exist on that server.',
+          database_private_endpoint_required: 'Private-network mode cannot connect to a public address. Use the internal Dokploy database hostname and ensure both services share its private network.',
           database_tls_unavailable: 'The PostgreSQL endpoint refused TLS. Enable TLS on the database or connect through its TLS-enabled endpoint. A full URI alone does not enable TLS on the server.',
           database_tls_handshake_failed: 'The endpoint did not complete a valid TLS handshake. Check the PostgreSQL hostname/port and TLS configuration.',
           database_connection_closed: 'The server or proxy closed the connection before setup completed. Check the PostgreSQL endpoint and proxy connection settings.',
@@ -842,7 +843,7 @@ function App() {
           <button type="submit" disabled={adminBusy || !sharedDatabaseCredentials}>{adminBusy ? 'Checking…' : postgresAuthSaved ? 'Save and recheck my access' : 'Save and check my access'}</button>
         </form>
         <label className="source-toggle"><input type="checkbox" checked={postgresEnabled} disabled={adminBusy} onChange={(event) => void togglePostgres(event.target.checked)} /> Enable PostgreSQL search</label>
-        <p className="muted">Searches your organization's data using reviewed queries over verified TLS. Each query applies your resolved database role and authorization context. PostgreSQL OAuth is unsupported.</p>
+        <p className="muted">Searches your organization's data using reviewed queries and the database connection configured by your administrator. Each query applies your resolved database role and authorization context. PostgreSQL OAuth is unsupported.</p>
         <button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void checkPostgres()}>Check my access and approved queries</button>
         <div className="button-row"><button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void discoverPostgres()}>Discover accessible schema</button></div>
         <p className="muted">Discovery lists only metadata visible to your resolved database role. It never reads sample rows. Only invoker-secure views with safe dependencies can be mapped; each profile access checks that the selected view key is non-null and unique, which may scan the view and time out on large views. Comments are untrusted database metadata; review them before using any description in a mapping.</p>

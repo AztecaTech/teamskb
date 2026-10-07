@@ -104,6 +104,32 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminConfig.User, adminConfig.Password = "postgres", "IQKB-test-admin-only"
+	privateService := connector.service.Copy()
+	privateService.TLSConfig, privateService.Fallbacks = nil, nil
+	privateService.DialFunc = dialPrivatePostgres
+	privateServiceConnector := &Connector{template: privateService.Copy(), service: privateService.Copy()}
+	privateUser, err := privateServiceConnector.ForSubject(adapter, Subject{TenantID: "tenant-one", ObjectID: "alex-object", Email: "alex@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if documents, err := privateUser.Search(t.Context(), "adapter_user", "adapter", "Policy", 5, tool); err != nil || len(documents) != 1 {
+		t.Fatalf("private-network user search failed: count=%d err=%v", len(documents), err)
+	}
+	privateConfig := adminConfig.Copy()
+	privateConfig.TLSConfig, privateConfig.Fallbacks = nil, nil
+	privateConfig.DialFunc = dialPrivatePostgres
+	privateConnector := &Connector{template: privateConfig.Copy(), service: privateConfig.Copy()}
+	if result, err := privateConnector.DiscoverAuthorization(t.Context(), "", ""); err != nil || len(result.Candidates) == 0 {
+		t.Fatalf("private-network metadata discovery failed: %v", err)
+	}
+	privateScope, err := privateConnector.ForSubject(adapter, Subject{TenantID: "tenant-one", ObjectID: "alex-object", Email: "alex@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An administrator URI remains unsuitable for user searches in either mode.
+	if _, err := privateScope.ResolveIdentity(t.Context(), "adapter_user", "adapter"); !errors.Is(err, ErrUnsafeDatabaseRole) {
+		t.Fatal("private transport bypassed service role restrictions")
+	}
 	adminConnector := &Connector{template: adminConfig.Copy(), service: adminConfig.Copy()}
 	if result, err := adminConnector.DiscoverAuthorization(t.Context(), "", ""); err != nil || len(result.Candidates) == 0 {
 		t.Fatalf("administrator-only metadata discovery failed: %v", err)
