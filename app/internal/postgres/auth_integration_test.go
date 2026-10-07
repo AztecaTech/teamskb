@@ -22,6 +22,43 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	adapter := AdapterConfig{Mode: "postgres_role", Schema: "iqkb_auth", Relation: "users", ApprovalRecord: "fixture-review"}
 	tool := validTool()
 	tool.SQL = `SELECT id::text AS id,title::text AS title,content::text AS content,source_url::text AS source_url FROM iqkb_data.documents WHERE title ILIKE '%' || $1 || '%' ORDER BY id LIMIT $2`
+	discovered, err := connector.DiscoverRoleMappings(t.Context(), "iqkb_auth", "permission_directory", "role")
+	if err != nil || len(discovered.ApplicationRoles) != 2 {
+		t.Fatalf("role discovery failed: %#v %v", discovered, err)
+	}
+	for _, role := range discovered.ExecutionRoles {
+		if role.Name == "postgres" || role.Name == "iqkb_unsafe" || role.Name == "iqkb_owner" {
+			t.Fatalf("unsafe discovery choice: %s", role.Name)
+		}
+	}
+	translated := AdapterConfig{Mode: "session_context", Schema: "iqkb_auth", Relation: "permission_directory", TenantScope: "tenant-one", ApprovalRecord: "fixture", Columns: &AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}, RoleMappings: map[string]string{"Reader": "iqkb_application", "Editor": "iqkb_application"}}
+	for _, user := range []string{"alex", "blair"} {
+		scope, err := connector.ForSubject(translated, Subject{TenantID: "tenant-one", ObjectID: user, Email: "app-" + user + "@example.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		docs, err := scope.Search(t.Context(), "adapter_user", "adapter", "Policy", 5, tool)
+		if err != nil || len(docs) != 1 || docs[0].ID != user+"-doc" {
+			t.Fatalf("translated role lost user isolation: %#v %v", docs, err)
+		}
+		conn, tx, identity, err := scope.beginAuthorized(t.Context(), "adapter_user", "adapter")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var applicationRole string
+		err = tx.QueryRow(t.Context(), `SELECT current_setting('request.jwt.claims')::jsonb->>'role'`).Scan(&applicationRole)
+		if err != nil || applicationRole != identity.ApplicationRole || applicationRole == identity.Role {
+			t.Fatal("application role was replaced by database execution role")
+		}
+		tx.Rollback(t.Context())
+		closeConnection(conn)
+	}
+	unmapped := translated
+	unmapped.RoleMappings = map[string]string{"Editor": "iqkb_application"}
+	unknown, _ := connector.ForSubject(unmapped, Subject{TenantID: "tenant-one", ObjectID: "alex", Email: "app-alex@example.com"})
+	if _, err := unknown.ResolveIdentity(t.Context(), "adapter_user", "adapter"); AuthorizationFailureCode(err) != "application_role_mapping_required" {
+		t.Fatal("unknown application role received fallback access")
+	}
 	mapped := AdapterConfig{Mode: "postgres_role", Schema: "iqkb_auth", Relation: "external_members", ApprovalRecord: "fixture-mapping", TenantScope: "tenant-one", Columns: &AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}}
 	for _, user := range []string{"alex", "blair"} {
 		scope, err := connector.ForSubject(mapped, Subject{TenantID: "tenant-one", ObjectID: user, Email: user + "@example.com"})

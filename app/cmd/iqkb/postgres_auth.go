@@ -100,6 +100,20 @@ func postgresAccessFailureCode(err error, fallback string) string {
 
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/postgres/auth/roles", func(w http.ResponseWriter, r *http.Request) {
+		if pg == nil {
+			jsonResponse(w, 503, `{"error":"postgres_not_configured"}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		result, err := pg.DiscoverRoleMappings(ctx, r.URL.Query().Get("schema"), r.URL.Query().Get("relation"), r.URL.Query().Get("column"))
+		if err != nil {
+			writeJSON(w, 424, map[string]string{"error": postgres.DiscoveryFailureCode(err)})
+			return
+		}
+		writeJSON(w, 200, result)
+	})
 	mux.HandleFunc("GET /api/admin/postgres/auth/discovery", func(w http.ResponseWriter, r *http.Request) {
 		if !pg.SharedCredentialsConfigured() {
 			jsonResponse(w, http.StatusConflict, `{"error":"shared_database_credentials_required"}`)

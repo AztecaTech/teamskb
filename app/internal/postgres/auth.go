@@ -20,6 +20,7 @@ type AdapterConfig struct {
 	ApprovalRecord string                `json:"approvalRecord"`
 	Columns        *AuthorizationColumns `json:"columns,omitempty"`
 	TenantScope    string                `json:"tenantScope,omitempty"`
+	RoleMappings   map[string]string     `json:"roleMappings,omitempty"`
 }
 
 type AuthorizationColumns struct {
@@ -32,7 +33,7 @@ type AuthorizationColumns struct {
 }
 
 type Subject struct{ TenantID, ObjectID, Email string }
-type ResolvedIdentity struct{ UserID, Role, PermissionVersion string }
+type ResolvedIdentity struct{ UserID, Role, PermissionVersion, ApplicationRole string }
 
 type AuthorizationError struct {
 	Code  string
@@ -53,6 +54,14 @@ func AuthorizationFailureCode(err error) string {
 }
 
 func (a AdapterConfig) Validate() error {
+	if len(a.RoleMappings) > 100 {
+		return errors.New("too many role mappings")
+	}
+	for application, execution := range a.RoleMappings {
+		if strings.TrimSpace(application) == "" || len(application) > 256 || !ValidDatabaseIdentity(execution) {
+			return errors.New("invalid role translation")
+		}
+	}
 	if a.Columns != nil {
 		for _, column := range []string{a.Columns.Email, a.Columns.UserID, a.Columns.Role, a.Columns.Active} {
 			if !ValidDatabaseIdentity(column) {
@@ -188,6 +197,16 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if !active {
 		return fail(&AuthorizationError{Code: "user_inactive"})
 	}
+	resolved.ApplicationRole = resolved.Role
+	if len(c.adapter.RoleMappings) > 0 {
+		translated, ok := c.adapter.RoleMappings[resolved.ApplicationRole]
+		if !ok {
+			return fail(&AuthorizationError{Code: "application_role_mapping_required"})
+		}
+		resolved.Role = translated
+		versionHash := sha256.Sum256([]byte(resolved.PermissionVersion + "\x00" + resolved.ApplicationRole))
+		resolved.PermissionVersion = hex.EncodeToString(versionHash[:])
+	}
 	if resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 {
 		return fail(&AuthorizationError{Code: "user_mapping_values_invalid"})
 	}
@@ -226,7 +245,7 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		return fail(err)
 	}
 	if c.adapter.Mode == "session_context" {
-		claims, _ := json.Marshal(map[string]string{"sub": resolved.UserID, "email": c.subject.Email, "role": resolved.Role, "tenant_id": c.subject.TenantID, "teams_object_id": c.subject.ObjectID})
+		claims, _ := json.Marshal(map[string]string{"sub": resolved.UserID, "email": c.subject.Email, "role": resolved.ApplicationRole, "database_role": resolved.Role, "tenant_id": c.subject.TenantID, "teams_object_id": c.subject.ObjectID})
 		if _, err = tx.Exec(ctx, `SELECT set_config('request.jwt.claims',$1,true)`, string(claims)); err != nil {
 			return fail(err)
 		}

@@ -135,7 +135,7 @@ func postgresProfilesReady(ctx context.Context, db *sql.DB, pg *postgres.Connect
 				continue
 			}
 			resolved, err := scoped.ResolveIdentity(ctx, "adapter_user", "adapter")
-			if err == nil && resolved == e.resolved {
+			if err == nil && (resolved.UserID == e.resolved.UserID && resolved.Role == e.resolved.Role && resolved.PermissionVersion == e.resolved.PermissionVersion) {
 				users[resolved.UserID] = true
 			}
 			if len(users) >= 2 {

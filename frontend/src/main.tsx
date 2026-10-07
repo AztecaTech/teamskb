@@ -13,7 +13,7 @@ type PostgresIdentity = { objectId: string; verifiedEmail: string; databaseIdent
 type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind: string; supported: boolean; reason?: string; comment?: string }>; columns: Array<{ schema: string; relation: string; name: string; dataType: string; nullable: boolean; comment?: string }>; keys: Array<{ schema: string; relation: string; kind: string; columns: string[] }>; relationships: Array<{ name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }>; nextSchema?: string; nextName?: string };
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
 type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; emailStatus?: string };
-type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string; columns?: { email: string; userId: string; role: string; active: string; tenantId?: string; permissionVersion?: string }; tenantScope?: string };
+type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string; columns?: { email: string; userId: string; role: string; active: string; tenantId?: string; permissionVersion?: string }; tenantScope?: string; roleMappings?: Record<string, string> };
 type AuthorizationCandidate = { schema: string; relation: string; ready: boolean; missingColumns: string[]; columns?: { name: string; dataType: string }[] };
 type AuthorizationDiscovery = { candidates: AuthorizationCandidate[]; nextSchema?: string; nextName?: string };
 type PostgresProfileSummary = { id: string; version: number; label: string; capability: string };
@@ -52,6 +52,8 @@ function App() {
   const [postgresAuth, setPostgresAuth] = useState<PostgresAuthAdapter>({ mode: 'postgres_role', schema: '', relation: '', approvalRecord: '' });
   const [postgresAuthSaved, setPostgresAuthSaved] = useState(false);
   const [mappingMessage, setMappingMessage] = useState('');
+  const [roleDiscovery, setRoleDiscovery] = useState<{ applicationRoles: string[]; executionRoles: { name: string; policies: number }[]; truncated: boolean } | null>(null);
+  const [roleMappingMessage, setRoleMappingMessage] = useState('');
   const [authorizationDiscovery, setAuthorizationDiscovery] = useState<AuthorizationDiscovery | null>(null);
   const [postgresEnabled, setPostgresEnabled] = useState(false);
   const [postgresObjectId, setPostgresObjectId] = useState('');
@@ -491,6 +493,23 @@ function App() {
     setPostgresCredentialStatus(await response.json() as PostgresCredentialStatus);
   }
 
+  async function detectRoleMappings(adapter = postgresAuth) {
+    setRoleMappingMessage('Discovering role values and database execution roles…');
+    try {
+      const query = new URLSearchParams({ schema: adapter.schema, relation: adapter.relation, column: adapter.columns?.role || 'database_role' });
+      const response = await api(`/api/admin/postgres/auth/roles?${query}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(`Role discovery failed (${result.error || 'unknown'}).`);
+      setRoleDiscovery(result);
+      const roles = new Set(result.executionRoles.map((role: { name: string }) => role.name));
+      const mappings: Record<string, string> = {};
+      for (const role of result.applicationRoles as string[]) mappings[role] = adapter.roleMappings?.[role] || (roles.has(role) ? role : '');
+      setPostgresAuth((current) => current.schema === adapter.schema && current.relation === adapter.relation ? { ...current, roleMappings: mappings } : current);
+      setPostgresAuthSaved(false);
+      setRoleMappingMessage('Exact database-role matches are prefilled. Select a reviewed execution role for application labels that have no exact match. Policy counts show existing role policies, not proof that they implement your application permissions.');
+    } catch (error) { setRoleMappingMessage(error instanceof Error ? error.message : 'Role discovery failed.'); }
+  }
+
   async function detectDatabaseMapping(append = false) {
     setAdminBusy(true); setMappingMessage('Inspecting database metadata…');
     try {
@@ -522,7 +541,7 @@ function App() {
       const discovery = { ...page, candidates };
       setAuthorizationDiscovery(discovery);
       const prefilled = authorizationPrefill(postgresAuth, candidates, !page.nextSchema);
-      if (prefilled !== postgresAuth) { setPostgresAuth(prefilled); setPostgresAuthSaved(false); }
+      if (prefilled !== postgresAuth) { setPostgresAuth(prefilled); setPostgresAuthSaved(false); await detectRoleMappings(prefilled); }
       setMappingMessage(prefilled !== postgresAuth ? 'User mapping prefilled from detected fields. Review the column mapping below, then save and check your access. The role must resolve to an allowed PostgreSQL execution role.' : page.nextSchema ? 'More metadata is available. Load the next page before choosing an automatic mapping.' : candidates.some((candidate) => candidate.ready || candidateColumnMapping(candidate)) ? 'Choose a compatible mapping below. Your existing entries have been preserved.' : 'No complete authorization mapping was found. Detected user tables are listed below with missing fields; their permission mapping still needs configuration.');
     } catch (error) { setMappingMessage(error instanceof Error ? error.message : 'Mapping discovery failed.'); }
     finally { setAdminBusy(false); }
@@ -562,6 +581,7 @@ function App() {
           user_mapping_query_failed: 'The mapped relation or columns cannot be queried. Check the saved column mapping and service SELECT permissions.',
           user_mapping_values_invalid: 'The matched record has missing or incompatible values. Check user ID, role, and the boolean active column.',
           execution_role_invalid: 'The mapped role is invalid or matches the service login. Map to a separate PostgreSQL execution role.',
+          application_role_mapping_required: 'This application role has no saved translation. Use Detect role values and permissions in the authorization mapping.',
           execution_role_not_found: 'The user row matched, but its role value is not a PostgreSQL role. Application roles need an authorization adapter that translates them to a database execution role.',
           execution_role_owns_tables: 'The mapped execution role owns tables and could bypass row policies. Use a non-owning execution role with explicit access grants.',
           execution_role_switch_failed: 'The connection could not switch to the mapped restricted identity. Database search access was denied.',
@@ -871,13 +891,14 @@ function App() {
         <p className="muted">{sharedDatabaseCredentials ? 'Shared database credentials are configured.' : 'Add the service username and password to POSTGRES_DSN in Dokploy and redeploy to use automatic matching. The legacy per-user login flow remains available below.'}</p>
         <button type="button" disabled={adminBusy || !sharedDatabaseCredentials} onClick={() => void detectDatabaseMapping()}>Detect user mapping and prefill</button>
         {mappingMessage && <p role="status">{mappingMessage}</p>}
-        {authorizationDiscovery && <div className="query-entry"><h4>Detected user mappings</h4>{authorizationDiscovery.candidates.map((candidate) => <div key={`${candidate.schema}.${candidate.relation}`}><strong>{candidate.schema}.{candidate.relation}</strong>{candidate.columns && <p className="muted">Detected fields: {candidate.columns.map((column) => column.name).join(', ')}.</p>}{(candidate.ready || candidateColumnMapping(candidate)) ? <button type="button" disabled={adminBusy} onClick={() => { setPostgresAuth({ ...postgresAuth, schema: candidate.schema, relation: candidate.relation, columns: candidate.ready ? undefined : candidateColumnMapping(candidate) ?? undefined }); setPostgresAuthSaved(false); setAdminMessage('Mapping fields filled from the selected relation. Review and save to check your access.'); }}>Use this mapping</button> : <p className="muted">Incomplete mapping: missing {candidate.missingColumns.join(', ') || 'supported schema or relation name'}.</p>}</div>)}{authorizationDiscovery.candidates.length === 0 && <p className="muted">No user mapping candidates on this metadata page.</p>}{authorizationDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void detectDatabaseMapping(true)}>Load next metadata page</button>}</div>}
+        {authorizationDiscovery && <div className="query-entry"><h4>Detected user mappings</h4>{authorizationDiscovery.candidates.map((candidate) => <div key={`${candidate.schema}.${candidate.relation}`}><strong>{candidate.schema}.{candidate.relation}</strong>{candidate.columns && <p className="muted">Detected fields: {candidate.columns.map((column) => column.name).join(', ')}.</p>}{(candidate.ready || candidateColumnMapping(candidate)) ? <button type="button" disabled={adminBusy} onClick={() => { const selected = { ...postgresAuth, schema: candidate.schema, relation: candidate.relation, columns: candidate.ready ? undefined : candidateColumnMapping(candidate) ?? undefined, roleMappings: undefined }; setPostgresAuth(selected); setPostgresAuthSaved(false); void detectRoleMappings(selected); setAdminMessage('Mapping fields filled from the selected relation. Review and save to check your access.'); }}>Use this mapping</button> : <p className="muted">Incomplete mapping: missing {candidate.missingColumns.join(', ') || 'supported schema or relation name'}.</p>}</div>)}{authorizationDiscovery.candidates.length === 0 && <p className="muted">No user mapping candidates on this metadata page.</p>}{authorizationDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void detectDatabaseMapping(true)}>Load next metadata page</button>}</div>}
         <form className="admin-form" onSubmit={(event) => void savePostgresAuth(event)}>
           <label>Permission system<select value={postgresAuth.mode} onChange={(event) => { setPostgresAuth({ ...postgresAuth, mode: event.target.value }); setPostgresAuthSaved(false); }}><option value="postgres_role">PostgreSQL roles and row policies</option><option value="session_context">Application auth with database row policies</option></select></label>
           <label>Authorization view schema<input value={postgresAuth.schema} onChange={(event) => { setPostgresAuth({ ...postgresAuth, schema: event.target.value }); setPostgresAuthSaved(false); }} maxLength={63} required placeholder="iqkb_auth" /></label>
           <label>Authorization view name<input value={postgresAuth.relation} onChange={(event) => { setPostgresAuth({ ...postgresAuth, relation: event.target.value }); setPostgresAuthSaved(false); }} maxLength={63} required placeholder="users" /></label>
           <details className="setup-details"><summary>Adapter view requirements</summary><p className="muted">The DBA-defined view translates your auth system into these columns: tenant_id, email, user_id, database_role, active (boolean), and permission_version. It must return exactly one user per tenant and email. The service login needs SELECT on this view and permission to switch to the returned restricted role. Application auth policies can read the transaction's iqkb user context and request.jwt.claims. Each permission change must update permission_version. Policies must enforce access in PostgreSQL; an application role label alone cannot restrict records.</p></details>
           {postgresAuth.columns && <div className="query-entry"><h4>Detected column mapping</h4>{(['email', 'userId', 'role', 'active', 'tenantId', 'permissionVersion'] as const).map((key) => <label key={key}>{({ email: 'Email column', userId: 'User ID column', role: 'Database execution role column', active: 'Active account column', tenantId: 'Tenant column (optional)', permissionVersion: 'Permission version column (optional)' })[key]}<input value={postgresAuth.columns?.[key] || ''} maxLength={63} required={['email', 'userId', 'role', 'active'].includes(key)} onChange={(event) => { setPostgresAuth({ ...postgresAuth, columns: { ...postgresAuth.columns!, [key]: event.target.value } }); setPostgresAuthSaved(false); }} /></label>)}<p className="muted">Without a tenant column, this mapping is restricted to your Microsoft tenant. Without a permission version column, changes to the user record invalidate prior profile tests. The role is checked against PostgreSQL before search access is granted.</p></div>}
+          <div className="query-entry"><h4>Role translation</h4><p className="muted">Translate each application role to an existing restricted PostgreSQL execution role. The mapping is saved with the authorization adapter.</p><button type="button" disabled={adminBusy || !postgresAuth.schema || !postgresAuth.relation} onClick={() => void detectRoleMappings()}>Detect role values and permissions</button>{roleMappingMessage && <p role="status">{roleMappingMessage}</p>}{roleDiscovery?.applicationRoles.map((role) => <label key={role}>{role}<select required value={postgresAuth.roleMappings?.[role] || ''} onChange={(event) => { setPostgresAuth({ ...postgresAuth, roleMappings: { ...postgresAuth.roleMappings, [role]: event.target.value } }); setPostgresAuthSaved(false); }}><option value="">Select execution role</option>{roleDiscovery.executionRoles.map((execution) => <option key={execution.name} value={execution.name}>{execution.name} ({execution.policies} row policies)</option>)}</select></label>)}{roleDiscovery?.truncated && <p role="status">Role discovery was limited to 100 values. Review the complete permission mapping before saving.</p>}</div>
           <label>Review note (optional)<input value={postgresAuth.approvalRecord} onChange={(event) => { setPostgresAuth({ ...postgresAuth, approvalRecord: event.target.value }); setPostgresAuthSaved(false); }} maxLength={200} placeholder="Optional ticket or note" /></label>
           <p className="muted">Saving records your administrator identity and the review time automatically.</p>
           <button type="submit" disabled={adminBusy || !sharedDatabaseCredentials}>{adminBusy ? 'Checking…' : postgresAuthSaved ? 'Save and recheck my access' : 'Save and check my access'}</button>

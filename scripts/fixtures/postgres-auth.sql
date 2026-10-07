@@ -24,6 +24,8 @@ GRANT USAGE ON SCHEMA iqkb_auth TO iqkb_service;
 GRANT SELECT ON iqkb_auth.users TO iqkb_service;
 CREATE VIEW iqkb_auth.external_members AS SELECT user_id AS id,email,database_role AS role,active AS enabled FROM iqkb_auth.users WHERE tenant_id='tenant-one';
 GRANT SELECT ON iqkb_auth.external_members TO iqkb_service;
+CREATE VIEW iqkb_auth.permission_directory AS SELECT user_id AS id,email,CASE WHEN user_id='alex' THEN 'Reader' ELSE 'Editor' END AS role,active AS enabled FROM iqkb_auth.users WHERE email IN ('app-alex@example.com','app-blair@example.com');
+GRANT SELECT ON iqkb_auth.permission_directory TO iqkb_service;
 CREATE SCHEMA iqkb_data;
 GRANT USAGE ON SCHEMA iqkb_data TO iqkb_alex,iqkb_blair,iqkb_application,iqkb_service;
 CREATE TABLE iqkb_data.documents(id text PRIMARY KEY,title text,content text,source_url text,owner_id text);
