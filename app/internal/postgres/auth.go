@@ -156,48 +156,10 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text,r.rolsuper FROM pg_roles r WHERE r.rolname=current_user`).Scan(&serviceSession, &serviceCurrent, &serviceSuperuser); err != nil || !validMetadataSession(serviceSession, serviceCurrent) {
 		return fail(&AuthorizationError{Code: "service_identity_mismatch", Cause: err})
 	}
-	relation := pgx.Identifier{c.adapter.Schema, c.adapter.Relation}.Sanitize()
-	columns := AuthorizationColumns{UserID: "user_id", Role: "database_role", PermissionVersion: "permission_version", Active: "active", TenantID: "tenant_id", Email: "email"}
-	if c.adapter.Columns != nil {
-		columns = *c.adapter.Columns
-	}
-	quote := func(name string) string { return "u." + pgx.Identifier{name}.Sanitize() }
-	tenant := "$1::text"
-	if columns.TenantID != "" {
-		tenant = quote(columns.TenantID) + "::text"
-	}
-	version := "md5(to_jsonb(u)::text)"
-	if columns.PermissionVersion != "" {
-		version = quote(columns.PermissionVersion) + "::text"
-	}
-	lookup := `SELECT ` + quote(columns.UserID) + `::text,` + quote(columns.Role) + `::text,` + version + `,` + quote(columns.Active) + `::boolean FROM ` + relation + ` u WHERE ` + tenant + `=$1::text AND lower(btrim(` + quote(columns.Email) + `::text))=$2 LIMIT 2`
-	rows, err := tx.Query(ctx, lookup, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
+	resolved, err = c.lookupMappedUser(ctx, tx)
 	if err != nil {
-		return fail(&AuthorizationError{Code: "user_mapping_query_failed", Cause: err})
+		return fail(err)
 	}
-	count := 0
-	active := false
-	for rows.Next() {
-		count++
-		if err = rows.Scan(&resolved.UserID, &resolved.Role, &resolved.PermissionVersion, &active); err != nil {
-			break
-		}
-	}
-	rowErr := rows.Err()
-	rows.Close()
-	if err != nil || rowErr != nil {
-		return fail(&AuthorizationError{Code: "user_mapping_values_invalid", Cause: errors.Join(err, rowErr)})
-	}
-	if count == 0 {
-		return fail(&AuthorizationError{Code: "user_email_not_found"})
-	}
-	if count != 1 {
-		return fail(&AuthorizationError{Code: "user_email_ambiguous"})
-	}
-	if !active {
-		return fail(&AuthorizationError{Code: "user_inactive"})
-	}
-	resolved.ApplicationRole = resolved.Role
 	if len(c.adapter.RoleMappings) > 0 {
 		translated, ok := c.adapter.RoleMappings[resolved.ApplicationRole]
 		if !ok {
@@ -271,5 +233,75 @@ func (c *Connector) ResolveIdentity(ctx context.Context, login, password string)
 	}
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)
+	return resolved, nil
+}
+
+// RecognizeUser only identifies a unique active account. It never returns a
+// transaction or establishes permission to search as the connection account.
+func (c *Connector) RecognizeUser(ctx context.Context) (ResolvedIdentity, error) {
+	if c.adapter == nil || c.subject == nil {
+		return ResolvedIdentity{}, errors.New("scoped adapter required")
+	}
+	metadata := *c
+	metadata.adapter = nil
+	metadata.subject = nil
+	metadata.metadataOnly = true
+	conn, tx, _, err := metadata.beginAuthorized(ctx, c.service.User, c.service.Password)
+	if err != nil {
+		return ResolvedIdentity{}, err
+	}
+	defer closeConnection(conn)
+	defer tx.Rollback(ctx)
+	return c.lookupMappedUser(ctx, tx)
+}
+
+func (c *Connector) lookupMappedUser(ctx context.Context, tx pgx.Tx) (ResolvedIdentity, error) {
+	var resolved ResolvedIdentity
+	relation := pgx.Identifier{c.adapter.Schema, c.adapter.Relation}.Sanitize()
+	columns := AuthorizationColumns{UserID: "user_id", Role: "database_role", PermissionVersion: "permission_version", Active: "active", TenantID: "tenant_id", Email: "email"}
+	if c.adapter.Columns != nil {
+		columns = *c.adapter.Columns
+	}
+	quote := func(name string) string { return "u." + pgx.Identifier{name}.Sanitize() }
+	tenant := "$1::text"
+	if columns.TenantID != "" {
+		tenant = quote(columns.TenantID) + "::text"
+	}
+	version := "md5(to_jsonb(u)::text)"
+	if columns.PermissionVersion != "" {
+		version = quote(columns.PermissionVersion) + "::text"
+	}
+	lookup := `SELECT ` + quote(columns.UserID) + `::text,` + quote(columns.Role) + `::text,` + version + `,` + quote(columns.Active) + `::boolean FROM ` + relation + ` u WHERE ` + tenant + `=$1::text AND lower(btrim(` + quote(columns.Email) + `::text))=$2 LIMIT 2`
+	rows, err := tx.Query(ctx, lookup, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
+	if err != nil {
+		return resolved, &AuthorizationError{Code: "user_mapping_query_failed", Cause: err}
+	}
+	count := 0
+	active := false
+	for rows.Next() {
+		count++
+		if err = rows.Scan(&resolved.UserID, &resolved.Role, &resolved.PermissionVersion, &active); err != nil {
+			break
+		}
+	}
+	rowErr := rows.Err()
+	rows.Close()
+	if err != nil || rowErr != nil {
+		return resolved, &AuthorizationError{Code: "user_mapping_values_invalid", Cause: errors.Join(err, rowErr)}
+	}
+	if count == 0 {
+		return resolved, &AuthorizationError{Code: "user_email_not_found"}
+	}
+	if count != 1 {
+		return resolved, &AuthorizationError{Code: "user_email_ambiguous"}
+	}
+	if !active {
+		return resolved, &AuthorizationError{Code: "user_inactive"}
+	}
+	resolved.ApplicationRole = resolved.Role
+
+	if resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.ApplicationRole == "" || len(resolved.ApplicationRole) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 {
+		return resolved, &AuthorizationError{Code: "user_mapping_values_invalid"}
+	}
 	return resolved, nil
 }

@@ -49,6 +49,21 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		t.Fatalf("bootstrap discovery=%d %s", rec.Code, rec.Body.String())
 	}
 	body := `{"mode":"session_context","schema":"iqkb_auth","relation":"users","approvalRecord":"fixture-review"}`
+	labelBody := `{"mode":"session_context","schema":"iqkb_auth","relation":"permission_directory","approvalRecord":"fixture-label","columns":{"email":"email","userId":"id","role":"role","active":"enabled"}}`
+	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", labelBody); rec.Code != 200 {
+		t.Fatalf("label adapter save: %s", rec.Body.String())
+	}
+	labelHandler := authenticate(fixedTokenVerifier{alex}, db, false, postgresEmailHandler(db, key, pg))
+	if rec := request(labelHandler, "PUT", "/api/postgres/email", `{"email":"app-alex@example.com"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"matched_permissions_required"`) || !strings.Contains(rec.Body.String(), `"applicationRole":"Reader"`) {
+		t.Fatalf("label recognition: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, _, _, err := postgresAccess(t.Context(), db, key, pg, alex); err != errPostgresEmailConfirmationRequired {
+		t.Fatal("role label alone granted database access")
+	}
+	labelStatus := authenticate(fixedTokenVerifier{alex}, db, false, postgresCredentialHandler(db, key, pg))
+	if rec := request(labelStatus, "GET", "/api/postgres/credentials", ""); !strings.Contains(rec.Body.String(), `"configured":false`) || !strings.Contains(rec.Body.String(), `"applicationRole":"Reader"`) {
+		t.Fatalf("label status lost separation: %s", rec.Body.String())
+	}
 	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", body); rec.Code != 200 {
 		t.Fatalf("save adapter=%d %s", rec.Code, rec.Body.String())
 	}

@@ -12,7 +12,7 @@ type SourceStatus = { id: string; kind: string; boundary: string; enabled: boole
 type PostgresIdentity = { objectId: string; verifiedEmail: string; databaseIdentity: string; reviewedBy: string; reviewedAt: string };
 type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind: string; supported: boolean; reason?: string; comment?: string }>; columns: Array<{ schema: string; relation: string; name: string; dataType: string; nullable: boolean; comment?: string }>; keys: Array<{ schema: string; relation: string; kind: string; columns: string[] }>; relationships: Array<{ name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }>; nextSchema?: string; nextName?: string };
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
-type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; emailStatus?: string };
+type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; applicationRole?: string; emailStatus?: string };
 type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string; columns?: { email: string; userId: string; role: string; active: string; tenantId?: string; permissionVersion?: string }; tenantScope?: string; roleMappings?: Record<string, string> };
 type AuthorizationCandidate = { schema: string; relation: string; ready: boolean; missingColumns: string[]; columns?: { name: string; dataType: string }[] };
 type AuthorizationDiscovery = { candidates: AuthorizationCandidate[]; nextSchema?: string; nextName?: string };
@@ -376,7 +376,11 @@ function App() {
       const response = await api(`/api/admin/postgres/discovery${query}`);
       if (!response.ok) {
         const failure = await response.json() as { error?: string };
-        throw new Error(`Business metadata discovery failed (${failure.error || 'unknown'}). Complete user mapping with “Detect user mapping and prefill,” then save and check your access before discovering business tables.`);
+        if (failure.error === 'database_email_confirmation_required') {
+          await refreshDatabaseIdentity();
+          throw new Error('Verify your database email in Database access first. Enter the same email shown for your Microsoft account and click “Verify my database email,” then retry business metadata discovery. Saving or changing the adapter requires email confirmation again.');
+        }
+        throw new Error(`Business metadata discovery failed (${failure.error || 'unknown'}). Check the saved authorization mapping and your database access.`);
       }
       const page = await response.json() as PostgresDiscovery;
       setPostgresDiscovery((current) => append && current ? { ...page, relations: [...current.relations, ...page.relations], columns: [...current.columns, ...page.columns], keys: [...(current.keys ?? []), ...(page.keys ?? [])], relationships: [...(current.relationships ?? []), ...(page.relationships ?? [])] } : page);
@@ -479,9 +483,17 @@ function App() {
     event.preventDefault(); setAdminBusy(true); setPostgresCredentialMessage('');
     try {
       const response = await api('/api/postgres/email', { method: 'PUT', body: JSON.stringify({ email: databaseEmail }) });
-      const result = await response.json() as { error?: string; userId?: string; databaseRole?: string };
-      if (!response.ok) throw new Error(`Database email confirmation failed (${result.error || 'unknown'}). Your entered email must match your verified Microsoft email and one active database user with valid permissions.`);
-      setPostgresCredentialMessage(`Email verified. Connected as ${result.userId} with database role ${result.databaseRole}.`);
+      const result = await response.json() as { error?: string; userId?: string; databaseRole?: string; applicationRole?: string; status?: string };
+      if (!response.ok) {
+        if (result.error === 'execution_role_not_found' || result.error === 'application_role_mapping_required') {
+          throw new Error(`Your email matched an active database user. Its application role${result.applicationRole ? ` “${result.applicationRole}”` : ''} has no valid database execution-role mapping. Review Detected permission structure and Role translation, then save the adapter. If no eligible execution roles exist, the permission adapter must be configured before access can be granted.`);
+        }
+        if (result.error === 'database_email_mismatch') throw new Error('Your entered database email does not match your verified Microsoft email.');
+        if (result.error === 'user_email_not_found') throw new Error('The entered email matches Microsoft, but no database user was found in the configured mapping.');
+        if (result.error === 'user_inactive') throw new Error('Your email matched a disabled database user.');
+        throw new Error(`Database access verification failed (${result.error || 'unknown'}). Check the mapped account and its execution-role permissions.`);
+      }
+      setPostgresCredentialMessage(result.status === 'matched_permissions_required' ? `Email verified. Matched database user ${result.userId} with application role “${result.applicationRole}”. Permissions are pending; database search is not enabled by this label alone.` : `Email verified. Connected as ${result.userId} with database role ${result.databaseRole}.`);
       await refreshDatabaseIdentity();
     } catch (error) { setPostgresCredentialMessage(error instanceof Error ? error.message : 'Database email confirmation failed.'); }
     finally { setAdminBusy(false); }
@@ -807,10 +819,10 @@ function App() {
     {session && <section className="account" aria-label="Signed-in account"><span>Access level</span><strong>{session.role}</strong></section>}
     {session?.role === 'User' && !setup?.active && <section className="setup-card"><h2>Your workspace is being set up</h2><p>Your administrator needs to connect a provider and source before you can ask questions.</p></section>}
 
-    {session && postgresCredentialStatus?.available && <section className="setup-card">
+    {session && postgresCredentialStatus?.available && <section id="database-access" className="setup-card">
       <h2>Your PostgreSQL sign-in</h2>
       {postgresCredentialStatus.mode === 'shared-adapter' ? <>
-        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_confirmation_required' ? 'Enter your database email below to verify the match before searching.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
+        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'matched_permissions_required' ? `Email matched database user ${postgresCredentialStatus.userId} with application role “${postgresCredentialStatus.applicationRole}”. Permission rules still need an enforceable mapping before database search can run.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_confirmation_required' ? 'Enter your database email below to verify the match before searching.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
         <p className="muted">Your Teams account is matched automatically. The connection is supplied by your organization.</p>
         <form onSubmit={confirmDatabaseEmail}>
           <p className="muted">Your verified Microsoft email: {postgresCredentialStatus.verifiedEmail || 'unavailable'}. Your database account email must match it.</p>
@@ -907,6 +919,7 @@ function App() {
         <p className="muted">Searches your organization's data using reviewed queries and the database connection configured by your administrator. Each query applies your resolved database role and authorization context. PostgreSQL OAuth is unsupported.</p>
         <button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void checkPostgres()}>Check my access and approved queries</button>
         <div className="button-row"><button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void discoverPostgres()}>Discover accessible schema</button></div>
+        {postgresCredentialStatus?.status === 'email_confirmation_required' && <p role="status">Your database email must be verified before business metadata discovery. <a href="#database-access">Go to Verify my database email</a>.</p>}
         <p className="muted">Discovery lists only metadata visible to your resolved database role. It never reads sample rows. Only invoker-secure views with safe dependencies can be mapped; each profile access checks that the selected view key is non-null and unique, which may scan the view and time out on large views. Comments are untrusted database metadata; review them before using any description in a mapping.</p>
         {postgresDiscovery && <div className="query-entry"><h3>Accessible relations</h3>{postgresDiscovery.relations.map((relation) => { const keys = (postgresDiscovery.keys ?? []).filter((key) => key.schema === relation.schema && key.relation === relation.name); const relationships = (postgresDiscovery.relationships ?? []).filter((item) => item.sourceSchema === relation.schema && item.sourceRelation === relation.name); return <article key={`${relation.schema}.${relation.name}`}><strong>{relation.schema}.{relation.name}</strong> <span className="muted">{relation.kind}</span>{relation.reason && <p className="muted">{relation.reason}</p>}{relation.comment && <p>{relation.comment}</p>}{keys.length > 0 && <p>Keys: {keys.map((key) => `${key.kind} (${key.columns.join(', ')})`).join('; ')}</p>}{relationships.map((item) => <p key={item.name}>Relationship: {item.sourceColumns.join(', ')} → {item.targetSchema}.{item.targetRelation} ({item.targetColumns.join(', ')})</p>)}<ul>{postgresDiscovery.columns.filter((column) => column.schema === relation.schema && column.relation === relation.name).map((column) => <li key={column.name}><code>{column.name}</code> · {column.dataType}{column.nullable ? ' · nullable' : ''}{column.comment ? ` · ${column.comment}` : ''}</li>)}</ul></article>;})}{postgresDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void discoverPostgres(postgresDiscovery.nextSchema!, postgresDiscovery.nextName!, true)}>Load next metadata page</button>}
 	          <h3>Map a business capability</h3><p className="muted">Choose metadata and business meanings you reviewed. No entities, aliases, relationships, or filter values are inferred.</p>

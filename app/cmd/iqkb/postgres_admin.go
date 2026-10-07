@@ -473,6 +473,7 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 			state := "adapter_required"
 			mapped := false
 			var resolved postgres.ResolvedIdentity
+			applicationRole := ""
 			if adapter != nil {
 				state = "email_required"
 				if principal.VerifiedEmail != "" {
@@ -484,13 +485,25 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 					mapped = accessErr == nil
 					if errors.Is(accessErr, errPostgresEmailConfirmationRequired) {
 						state = "email_confirmation_required"
+						var match string
+						if db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key=?`, "match:"+databaseEmailKey(principal)).Scan(&match) == nil && match == strings.ToLower(strings.TrimSpace(principal.VerifiedEmail))+":"+adapter.Fingerprint() {
+							candidate, _, _, matchErr := postgresMappedAccess(r.Context(), db, encryptionKey, pg, principal)
+							if matchErr == nil {
+								user, lookupErr := candidate.RecognizeUser(r.Context())
+								if lookupErr == nil {
+									state = "matched_permissions_required"
+									applicationRole = user.ApplicationRole
+									resolved.UserID = user.UserID
+								}
+							}
+						}
 					}
 					if mapped {
 						state = "connected"
 					}
 				}
 			}
-			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "status": state, "userId": resolved.UserID, "databaseRole": resolved.Role})
+			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "status": state, "userId": resolved.UserID, "databaseRole": resolved.Role, "applicationRole": applicationRole})
 			return
 		}
 		mapped := false

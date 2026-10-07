@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -71,29 +72,7 @@ ORDER BY (n.nspname=$1 AND c.relname=$2) DESC,n.nspname,c.relname LIMIT 51`, sch
 	rowErr := rows.Err()
 	rows.Close()
 	if err != nil || rowErr != nil {
-		if err != nil || rowErr != nil {
-			return result, errors.Join(err, rowErr)
-		}
-		for {
-			encoded, encodeErr := json.Marshal(result)
-			if encodeErr != nil {
-				return result, encodeErr
-			}
-			if len(encoded) <= 128<<10 {
-				break
-			}
-			result.Truncated = true
-			if len(result.Policies) > 0 {
-				result.Policies = result.Policies[:len(result.Policies)-1]
-			} else if len(result.Relationships) > 0 {
-				result.Relationships = result.Relationships[:len(result.Relationships)-1]
-			} else if len(result.Relations) > 0 {
-				result.Relations = result.Relations[:len(result.Relations)-1]
-			} else {
-				break
-			}
-		}
-		return result, nil
+		return result, errors.Join(err, rowErr)
 	}
 	rows, err = tx.Query(ctx, `SELECT f.conname,sn.nspname,s.relname,ARRAY(SELECT a.attname::text FROM unnest(f.conkey) WITH ORDINALITY k(num,position) JOIN pg_attribute a ON a.attrelid=s.oid AND a.attnum=k.num ORDER BY k.position),tn.nspname,t.relname,ARRAY(SELECT a.attname::text FROM unnest(f.confkey) WITH ORDINALITY k(num,position) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=k.num ORDER BY k.position)
 FROM pg_constraint f JOIN pg_class s ON s.oid=f.conrelid JOIN pg_namespace sn ON sn.oid=s.relnamespace JOIN pg_class t ON t.oid=f.confrelid JOIN pg_namespace tn ON tn.oid=t.relnamespace
@@ -118,29 +97,7 @@ ORDER BY sn.nspname,s.relname,f.conname LIMIT 101`, ids)
 	rowErr = rows.Err()
 	rows.Close()
 	if err != nil || rowErr != nil {
-		if err != nil || rowErr != nil {
-			return result, errors.Join(err, rowErr)
-		}
-		for {
-			encoded, encodeErr := json.Marshal(result)
-			if encodeErr != nil {
-				return result, encodeErr
-			}
-			if len(encoded) <= 128<<10 {
-				break
-			}
-			result.Truncated = true
-			if len(result.Policies) > 0 {
-				result.Policies = result.Policies[:len(result.Policies)-1]
-			} else if len(result.Relationships) > 0 {
-				result.Relationships = result.Relationships[:len(result.Relationships)-1]
-			} else if len(result.Relations) > 0 {
-				result.Relations = result.Relations[:len(result.Relations)-1]
-			} else {
-				break
-			}
-		}
-		return result, nil
+		return result, errors.Join(err, rowErr)
 	}
 	rows, err = tx.Query(ctx, `SELECT n.nspname,c.relname,p.polname,ARRAY(SELECT CASE WHEN id=0 THEN 'PUBLIC' ELSE COALESCE((SELECT rolname::text FROM pg_roles WHERE oid=id),'unknown') END FROM unnest(p.polroles) id),left(COALESCE(pg_get_expr(p.polqual,p.polrelid),''),4097),left(COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),''),4097),c.relrowsecurity
 FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -167,6 +124,7 @@ WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND (has_table_privil
 	if err != nil || rowErr != nil {
 		return result, errors.Join(err, rowErr)
 	}
+	classifyPermissionEvidence(&result, schema, relation)
 	for {
 		encoded, encodeErr := json.Marshal(result)
 		if encodeErr != nil {
@@ -187,4 +145,45 @@ WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND (has_table_privil
 		}
 	}
 	return result, nil
+}
+
+func classifyPermissionEvidence(result *PermissionDiscovery, schema, relation string) {
+	for i := range result.Relations {
+		item := &result.Relations[i]
+		if item.Schema == schema && item.Relation == relation {
+			continue
+		}
+		semantic := false
+		for _, name := range item.Columns {
+			normalized := strings.ToLower(strings.ReplaceAll(name, "_", ""))
+			for _, signal := range []string{"permission", "privilege", "capability", "access", "role", "team", "scope"} {
+				if strings.Contains(normalized, signal) {
+					semantic = true
+				}
+			}
+		}
+		if semantic {
+			item.Evidence = "permission-related fields; authorization meaning requires review"
+			continue
+		}
+		linked, auditOnly := false, true
+		for _, link := range result.Relationships {
+			if link.SourceSchema != item.Schema || link.SourceRelation != item.Relation || link.TargetSchema != schema || link.TargetRelation != relation {
+				continue
+			}
+			linked = true
+			for _, column := range link.SourceColumns {
+				switch strings.ToLower(strings.ReplaceAll(column, "_", "")) {
+				case "createdby", "updatedby", "deletedby", "changedby", "archivedby":
+				default:
+					auditOnly = false
+				}
+			}
+		}
+		if linked && auditOnly {
+			item.Evidence = "audit references only; no access rule demonstrated"
+		} else if linked {
+			item.Evidence = "user relationship; no access rule demonstrated"
+		}
+	}
 }

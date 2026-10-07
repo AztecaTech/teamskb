@@ -44,9 +44,22 @@ func postgresEmailHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.H
 			writeJSON(w, 409, map[string]string{"error": postgresAccessFailureCode(err, "database_mapping_required")})
 			return
 		}
+		matched, err := scoped.RecognizeUser(ctx)
+		if err != nil { writeJSON(w,424,map[string]string{"error":postgres.AuthorizationFailureCode(err)});return }
+		_, err = db.ExecContext(ctx,`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,"match:"+databaseEmailKey(principal),email+":"+before.Fingerprint())
+		if err != nil { jsonResponse(w,503,`{"error":"database_email_not_saved"}`);return }
 		resolved, err := scoped.ResolveIdentity(ctx, login, password)
 		if err != nil {
-			writeJSON(w, 424, map[string]string{"error": postgres.AuthorizationFailureCode(err)})
+			failure := map[string]string{"error": postgres.AuthorizationFailureCode(err)}
+			if failure["error"] == "execution_role_not_found" || failure["error"] == "application_role_mapping_required" || failure["error"] == "execution_role_invalid" {
+				writeJSON(w,200,map[string]string{"status":"matched_permissions_required","userId":matched.UserID,"applicationRole":matched.ApplicationRole,"permissionError":failure["error"]})
+				return
+			}
+			if failure["error"] == "execution_role_not_found" || failure["error"] == "application_role_mapping_required" {
+				failure["applicationRole"] = resolved.ApplicationRole
+				failure["databaseRole"] = resolved.Role
+			}
+			writeJSON(w, 424, failure)
 			return
 		}
 		adapter, err := loadPostgresAdapter(db)
