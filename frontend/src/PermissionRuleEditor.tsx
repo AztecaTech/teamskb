@@ -81,10 +81,10 @@ export default function PermissionRuleEditor({ labels, resources: evidenceResour
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Automatic preparation failed.'); }
     finally { setBusy(false); }
   }
-  async function save(generate = false) {
+  async function save(generate = false, selectedDraft?: Draft) {
     setBusy(true); setMessage('');
     try {
-      const response = await api(`/api/admin/postgres/auth/permission-drafts${generate ? '/preview' : ''}`, { method: generate ? 'POST' : 'PUT', body: JSON.stringify(drafts) });
+      const response = await api(`/api/admin/postgres/auth/permission-drafts${generate ? '/preview' : ''}`, { method: generate ? 'POST' : 'PUT', body: JSON.stringify(selectedDraft ? [selectedDraft] : drafts) });
       const result = await response.json();
       if (!response.ok) throw new Error(generate ? 'Preview requires reviewed rules, selected fields and row scope, new role names, and readable base tables without PUBLIC SELECT grants.' : 'Permission drafts could not be saved. Check role names and resource fields.');
       if (generate) { setPreview(result.sql); setMessage('SQL preview validated. Review it before applying it in your database. Afterwards detect the new execution roles and save their label translations.'); }
@@ -117,6 +117,7 @@ export default function PermissionRuleEditor({ labels, resources: evidenceResour
         </details>;
       })}
       {draft.resources.length === 0 && <p>No read rules defined for this label.</p>}
+      <button type="button" disabled={busy || draft.resources.length === 0} onClick={() => void save(true, draft)}>Generate SQL preview for this label</button>
     </div>)}
     <div className="button-row"><button type="button" disabled={busy || !loaded} onClick={() => void save()}>Save permission drafts</button><button type="button" disabled={busy || !loaded || drafts.length === 0} onClick={() => void save(true)}>Generate reviewed SQL preview</button></div>
     {message && <p role="status">{message}</p>}{preview && <><p>Applying this SQL changes database roles, grants, and row policies. It has not been executed by the app.</p><textarea aria-label="Permission deployment SQL preview" rows={16} readOnly value={preview} /></>}

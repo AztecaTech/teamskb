@@ -17,6 +17,7 @@ import (
 var errPostgresAdapterRequired = errors.New("configure a database authorization adapter first")
 var errPostgresEmailRequired = errors.New("trusted directory email is required")
 var errPostgresEmailConfirmationRequired = errors.New("confirm your database email first")
+var errPostgresPermissionMappingRequired = errors.New("email matched; permission rules require deployment")
 
 func databaseEmailKey(p identity.Principal) string {
 	return "postgres_email:" + p.TenantID + ":" + p.ObjectID
@@ -34,6 +35,10 @@ func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Co
 	if adapter != nil {
 		var saved string
 		if err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, databaseEmailKey(principal)).Scan(&saved); err != nil || saved != strings.ToLower(strings.TrimSpace(principal.VerifiedEmail))+":"+adapter.Fingerprint() {
+			var matched string
+			if db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, "match:"+databaseEmailKey(principal)).Scan(&matched) == nil && matched == strings.ToLower(strings.TrimSpace(principal.VerifiedEmail))+":"+adapter.Fingerprint() {
+				return nil, "", "", errPostgresPermissionMappingRequired
+			}
 			return nil, "", "", errPostgresEmailConfirmationRequired
 		}
 	}
@@ -86,6 +91,9 @@ func postgresMappedAccess(ctx context.Context, db *sql.DB, key []byte, pg *postg
 }
 
 func postgresAccessFailureCode(err error, fallback string) string {
+	if errors.Is(err, errPostgresPermissionMappingRequired) {
+		return "database_permission_mapping_required"
+	}
 	if errors.Is(err, errPostgresEmailConfirmationRequired) {
 		return "database_email_confirmation_required"
 	}

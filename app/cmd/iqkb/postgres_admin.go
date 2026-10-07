@@ -483,7 +483,7 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 						resolved, accessErr = scoped.ResolveIdentity(r.Context(), login, password)
 					}
 					mapped = accessErr == nil
-					if errors.Is(accessErr, errPostgresEmailConfirmationRequired) {
+					if errors.Is(accessErr, errPostgresEmailConfirmationRequired) || errors.Is(accessErr, errPostgresPermissionMappingRequired) {
 						state = "email_confirmation_required"
 						var match string
 						if db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key=?`, "match:"+databaseEmailKey(principal)).Scan(&match) == nil && match == strings.ToLower(strings.TrimSpace(principal.VerifiedEmail))+":"+adapter.Fingerprint() {

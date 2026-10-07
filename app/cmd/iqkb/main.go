@@ -788,6 +788,9 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 			if errors.Is(err, errPostgresEmailConfirmationRequired) {
 				return sourceAccessFailure("postgres", "database_email_confirmation_required", err)
 			}
+			if errors.Is(err, errPostgresPermissionMappingRequired) {
+				return sourceAccessFailure("postgres", "database_permission_mapping_required", err)
+			}
 			return sourceAccessFailure("postgres", "postgres_credentials_required", err)
 		}
 		if err := pg.CheckIdentity(ctx, databaseIdentity, password); err != nil {

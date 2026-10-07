@@ -57,7 +57,7 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	if rec := request(labelHandler, "PUT", "/api/postgres/email", `{"email":"app-alex@example.com"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"status":"matched_permissions_required"`) || !strings.Contains(rec.Body.String(), `"applicationRole":"Reader"`) {
 		t.Fatalf("label recognition: %d %s", rec.Code, rec.Body.String())
 	}
-	if _, _, _, err := postgresAccess(t.Context(), db, key, pg, alex); err != errPostgresEmailConfirmationRequired {
+	if _, _, _, err := postgresAccess(t.Context(), db, key, pg, alex); err != errPostgresPermissionMappingRequired {
 		t.Fatal("role label alone granted database access")
 	}
 	labelStatus := authenticate(fixedTokenVerifier{alex}, db, false, postgresCredentialHandler(db, key, pg))
