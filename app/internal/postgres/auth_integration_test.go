@@ -36,6 +36,14 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 			if err != nil || len(docs) != 1 || docs[0].ID != user+"-doc" {
 				t.Fatalf("%s %s rows=%#v err=%v", mode, user, docs, err)
 			}
+			if err := scoped.CheckToolAccess(t.Context(), "adapter_user", "adapter", tool); err != nil {
+				t.Fatalf("zero-row permission check failed: %v", err)
+			}
+			deniedTool := tool
+			deniedTool.SQL = `SELECT id::text AS id,id::text AS title,id::text AS content,id::text AS source_url FROM iqkb_data.service_secret WHERE id=$1 LIMIT $2`
+			if scoped.CheckToolAccess(t.Context(), "adapter_user", "adapter", deniedTool) == nil {
+				t.Fatal("zero-row check accepted unauthorized table")
+			}
 			page, err := scoped.Discover(t.Context(), "adapter_user", "adapter", "", "")
 			if err != nil {
 				t.Fatal(err)

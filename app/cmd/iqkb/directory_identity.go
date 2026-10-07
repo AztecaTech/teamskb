@@ -16,6 +16,8 @@ type directoryTokenVerifier struct {
 	shared bool
 }
 
+type deferDirectoryLookupKey struct{}
+
 func (v directoryTokenVerifier) Verify(ctx context.Context, assertion string) (identity.Principal, error) {
 	principal, err := v.base.Verify(ctx, assertion)
 	if err != nil {
@@ -26,6 +28,10 @@ func (v directoryTokenVerifier) Verify(ctx context.Context, assertion string) (i
 	// can still open setup to repair consent/configuration.
 	if v.shared || (adapterErr == nil && adapter != nil) {
 		principal.VerifiedEmail = ""
+		if deferred, _ := ctx.Value(deferDirectoryLookupKey{}).(bool); deferred {
+			principal.DirectoryEmailStatus = "deferred"
+			return principal, nil
+		}
 		principal.DirectoryEmailStatus = "directory_unavailable"
 		if email, emailErr := graph.DirectoryEmail(ctx, v.socket, assertion, principal.ObjectID); emailErr == nil {
 			principal.VerifiedEmail = email

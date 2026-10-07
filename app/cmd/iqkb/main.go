@@ -524,6 +524,9 @@ func authenticateWithAskRateLimit(verifier tokenVerifier, db *sql.DB, adminOnly 
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
+		if r.URL.Path == "/api/ask" {
+			ctx = context.WithValue(ctx, deferDirectoryLookupKey{}, true)
+		}
 		principal, err := verifier.Verify(ctx, raw)
 		if err != nil {
 			if errors.Is(err, identity.ErrMetadataUnavailable) {

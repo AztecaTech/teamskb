@@ -616,7 +616,7 @@ func approvedPostgresToolsForUser(ctx context.Context, db *sql.DB, encryptionKey
 				checkErr = errors.New("invalid profile")
 			}
 		} else {
-			checkErr = checkPostgresTool(checkCtx, pg, login, password, tool)
+			checkErr = pg.CheckToolAccess(checkCtx, login, password, tool)
 		}
 		cancel()
 		if checkErr == nil {

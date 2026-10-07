@@ -1,5 +1,25 @@
 # PostgreSQL authorization adapters
 
+## Choosing search sources
+
+The question form offers **Database only**, **Microsoft only**, and **Database
+and Microsoft**. The server filters retrieval to the selected, administrator-enabled
+sources. Existing bot/API callers that omit `scope` retain combined search behavior.
+Database-only requests avoid Microsoft content retrieval; Microsoft-only requests
+avoid database catalog checks, query selection, and database identity email lookup.
+
+Independent Microsoft source searches run concurrently. Fixed-query permission
+checks return zero rows, and a single approved fixed database query skips the
+selector model call. Actual query execution still resolves current user permissions.
+Business profiles retain schema and two-user validation.
+
+Results label Database versus Microsoft citations and show per-source result
+counts, unavailable sources, missing approved queries, and partial-result warnings.
+Deployment logs include content-free request IDs, scope, source status/counts, and
+timings for catalog checks, selection, retrieval, and answer generation. The startup
+logs alone cannot diagnose search latency. No production speedup is claimed by the
+local fixture; model/provider and Microsoft latency still affect real requests.
+
 The shared connection in Dokploy supplies database credentials, not a user's
 permissions. IQ Knowledge resolves the signed-in Teams member's directory email,
 looks up one database identity, and applies its restricted PostgreSQL role inside

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -101,12 +102,16 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		t.Fatalf("activation state=%s err=%v", state, err)
 	}
 	for _, principal := range []identity.Principal{alex, blair} {
+		if _, err := db.Exec(`UPDATE source_boundaries SET enabled=1 WHERE source_id='user-onedrive'`); err != nil {
+			t.Fatal(err)
+		}
 		approved, err := approvedPostgresToolsForUser(t.Context(), db, key, pg, principal)
 		if err != nil || len(approved) != 1 {
 			t.Fatalf("catalog=%#v err=%v", approved, err)
 		}
 		selection := &postgres.ToolSelection{ToolID: "policies", Term: "Policy", Limit: 5}
-		sources, failures, err := retrieveEnabledSources(t.Context(), db, key, pg, principal, "unused", "assertion", "Policy", selection)
+		scopedContext := context.WithValue(t.Context(), searchScopeKey{}, "database")
+		sources, failures, err := retrieveEnabledSources(scopedContext, db, key, pg, principal, "unused", "assertion", "Policy", selection)
 		wanted := "alex-doc"
 		if principal.ObjectID == blair.ObjectID {
 			wanted = "blair-doc"
@@ -140,5 +145,34 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	}
 	if err = db.QueryRow(`SELECT COUNT(*) FROM encrypted_secrets WHERE secret_id LIKE 'postgres_password:%'`).Scan(&count); err != nil || count != 0 {
 		t.Fatal("shared workflow stored per-user passwords")
+	}
+	// A single fixed query routes directly: no selector model call and no
+	// Microsoft retrieval, even when OneDrive remains enabled globally.
+	if _, err = db.Exec(`DELETE FROM query_tools`); err != nil {
+		t.Fatal(err)
+	}
+	fixedSQL := `SELECT id::text AS id,title::text AS title,content::text AS content,source_url::text AS source_url FROM iqkb_data.documents WHERE content ILIKE '%' || $1 || '%' ORDER BY id LIMIT $2`
+	if _, err = db.Exec(`INSERT INTO query_tools(tool_id,version,description,fixed_sql,parameter_schema,output_columns,approval_record) VALUES('policy_search',1,'Policies',?,'[{"name":"question","type":"text"},{"name":"limit","type":"integer[1,5]"}]','["id:text","title:text","content:text","source_url:text"]','fixture-review')`, fixedSQL); err != nil {
+		t.Fatal(err)
+	}
+	selectorCalled := false
+	ask := authenticate(fixedTokenVerifier{alex}, db, false, askHandlerWithRuntime(db, key, askRuntime{
+		postgres: pg, postgresAvailable: true, modelAPIKey: testProviderAPIKey,
+		selectTool: func(context.Context, string, string, string, string, string) (string, error) {
+			selectorCalled = true
+			return "", nil
+		},
+		retrieve: func(ctx context.Context, db *sql.DB, principal identity.Principal, assertion, question string, selection *postgres.ToolSelection) (retrievedSources, int, error) {
+			return retrieveEnabledSources(ctx, db, key, pg, principal, "unused", assertion, question, selection)
+		},
+		generate: func(_ context.Context, _, _, _, _, prompt string) (string, error) {
+			if !strings.Contains(prompt, "Alex private policy") || strings.Contains(prompt, "Blair private policy") {
+				t.Fatal("answer prompt did not respect DB permissions")
+			}
+			return "Alex private policy [S1]", nil
+		},
+	}))
+	if rec := request(ask, "POST", "/api/ask", `{"question":"policy","scope":"database"}`); rec.Code != 200 || selectorCalled || !strings.Contains(rec.Body.String(), `"kind":"database"`) || !strings.Contains(rec.Body.String(), `"results":1`) {
+		t.Fatalf("database-only answer=%d %s selector=%v", rec.Code, rec.Body.String(), selectorCalled)
 	}
 }

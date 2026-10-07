@@ -19,7 +19,8 @@ type AuthorizationDiscovery = { candidates: AuthorizationCandidate[]; nextSchema
 type PostgresProfileSummary = { id: string; version: number; label: string; capability: string };
 type PostgresProfileTest = { profileId: string; version: number; objectId: string; databaseIdentity: string; testedAt: string; status: string; category: string };
 type PostgresProfilePreview = { version: number; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; parentSQL?: string; parentParameters?: Array<{ name: string; type: string }>; approvalRecord: string; permissionExplanation: string };
-type AskResult = { answer?: string; sources: Array<{ id: string; name: string; url: string }>; clarification?: { kind: string; question: string; candidates: Array<{ id: string; displayName: string }> } };
+type SearchDetails = { scope: string; database: string; warning?: string; sources?: Array<{ source: string; status: string; results: number }> };
+type AskResult = { answer?: string; sources: Array<{ id: string; name: string; url: string; kind?: string }>; search?: SearchDetails; clarification?: { kind: string; question: string; candidates: Array<{ id: string; displayName: string }> } };
 
 function directoryEmailHelp(status?: string) {
   if (status === 'directory_mail_missing') return 'Your Microsoft directory profile has no usable email address. Ask your administrator to populate its mail field; a manually entered database email cannot replace it.';
@@ -89,6 +90,8 @@ function App() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [bootstrapSecret, setBootstrapSecret] = useState('');
   const [question, setQuestion] = useState('');
+  const [searchLocation, setSearchLocation] = useState('all');
+  const [searchDetails, setSearchDetails] = useState<SearchDetails | null>(null);
   const [answer, setAnswer] = useState<AskResult | null>(null);
   const [askMessage, setAskMessage] = useState('');
   const [asking, setAsking] = useState(false);
@@ -702,9 +705,11 @@ function App() {
     setAsking(true);
     setAskMessage('');
     setAnswer(null);
+    setSearchDetails(null);
     try {
-      const response = await api('/api/ask', { method: 'POST', body: JSON.stringify({ question }) });
+      const response = await api('/api/ask', { method: 'POST', body: JSON.stringify({ question, scope: searchLocation }) });
       const result = await response.json() as AskResult & { error?: string };
+      if (result.search) setSearchDetails(result.search);
       if (!response.ok) throw new Error(result.error === 'source_unavailable' ? 'A connected source could not be searched. Sign in again or ask your administrator to check permissions.' : 'The assistant could not answer this question.');
       setAnswer(result);
     } catch (error) {
@@ -890,16 +895,18 @@ function App() {
 
     {setup?.active && <section className="ask-card">
       <h2>Ask connected sources</h2>
-      <p className="muted">Your question is searched against enabled sources; the question and selected excerpts from connected Microsoft and optional PostgreSQL sources are sent to your administrator’s model provider. IQ-kbteams does not save them, but Microsoft and the provider apply their own data policies. Personal bot messages and replies are subject to your tenant’s Teams retention policy.</p>
+      <p className="muted">Choose Database, Microsoft, or both. Searches use enabled sources and your permissions; the question and matching excerpts are sent to your administrator’s model provider. IQ Knowledge does not save them. Microsoft and the provider apply their own data policies.</p>
       <form onSubmit={(event) => void ask(event)}>
+        <label htmlFor="search-location">Where to search<select id="search-location" value={searchLocation} disabled={asking} onChange={(event) => setSearchLocation(event.target.value)}><option value="all">Database and Microsoft</option><option value="database">Database only</option><option value="microsoft">Microsoft only</option></select></label>
         <label htmlFor="question">Question</label>
         <textarea id="question" value={question} onChange={(event) => setQuestion(event.target.value)} maxLength={500} rows={3} required placeholder="Ask about a policy or document…" />
-        <button type="submit" disabled={asking || !question.trim()}>{asking ? 'Searching connected sources…' : 'Ask privately'}</button>
+        <button type="submit" disabled={asking || !question.trim()}>{asking ? searchLocation === 'database' ? 'Searching database…' : searchLocation === 'microsoft' ? 'Searching Microsoft…' : 'Searching selected sources…' : 'Ask privately'}</button>
       </form>
       {askMessage && <p role="status">{askMessage}</p>}
+      {searchDetails && <div className="query-entry" role="status">{searchDetails.scope !== 'microsoft' && <p>Database: {({ not_selected: 'not selected', disabled: 'not enabled', not_configured: 'connection not configured', no_authorized_queries: 'no usable approved queries; check your mapping, permissions, and query catalog', no_matching_query: 'no approved query matched this question', query_selection_failed: 'query selection failed', searched: 'query selected' } as Record<string, string>)[searchDetails.database] || searchDetails.database}.</p>}{searchDetails.sources?.map((source) => <p key={source.source}>{source.source === 'database' ? 'Database' : source.source}: {source.status.replaceAll('_', ' ')} · {source.results} results</p>)}{searchDetails.warning && <p>{searchDetails.warning}</p>}</div>}
       {answer && <div className="answer" aria-live="polite">
         {answer.clarification ? <><h3>Clarification needed</h3><p>{answer.clarification.question}</p><ul>{answer.clarification.candidates.map((candidate) => <li key={candidate.id}>{candidate.displayName} <span className="muted">({candidate.id})</span></li>)}</ul></> : <><h3>Answer</h3><p className="answer-text">{answer.answer}</p></>}
-        {answer.sources.length > 0 && <><h3>Sources</h3><ul>{answer.sources.map((source) => <li key={source.id}>{source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.name}</a> : source.name} <span>[{source.id}]</span></li>)}</ul></>}
+        {answer.sources.length > 0 && <><h3>Sources</h3><ul>{answer.sources.map((source) => <li key={source.id}>{source.kind && <strong>{source.kind === 'database' ? 'Database' : 'Microsoft'} · </strong>}{source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.name}</a> : source.name} <span>[{source.id}]</span></li>)}</ul></>}
       </div>}
     </section>}
     <footer>Answers use only connected sources and your organization’s access rules. Each answer is private to the signed-in account.</footer>

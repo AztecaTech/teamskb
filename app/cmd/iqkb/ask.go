@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -34,12 +37,14 @@ var answerCitationTokenPattern = regexp.MustCompile(`\[S[^\]\r\n]*\]`)
 
 type askRequest struct {
 	Question string `json:"question"`
+	Scope    string `json:"scope,omitempty"`
 }
 
 type answerSource struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	Kind string `json:"kind,omitempty"`
 }
 
 type askRuntime struct {
@@ -48,6 +53,7 @@ type askRuntime struct {
 	postgresAvailable bool
 	postgres          *postgres.Connector
 	modelAPIKey       string
+	oboSocket         string
 	modelAttemptLimit int
 	admission         *askAdmissionGate
 	extract           func(context.Context, string, []byte) (string, error)
@@ -58,6 +64,8 @@ type retrievedSources struct {
 	documents     []graph.Document
 	records       []postgres.BusinessRecord
 	clarification *postgres.ProfileClarification
+	documentKinds []string
+	diagnostics   []sourceSearchStatus
 }
 
 func askHandler(db *sql.DB, encryptionKey []byte, oboSocket, parserSocket string, pg *postgres.Connector, apiKey string) http.HandlerFunc {
@@ -77,6 +85,7 @@ func askHandlerWithControls(db *sql.DB, encryptionKey []byte, oboSocket, parserS
 		postgresAvailable: pg != nil,
 		postgres:          pg,
 		modelAPIKey:       apiKey,
+		oboSocket:         oboSocket,
 		modelAttemptLimit: modelAttemptLimit,
 		admission:         admission,
 		extract: func(ctx context.Context, filename string, content []byte) (string, error) {
@@ -107,6 +116,14 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 			jsonResponse(w, http.StatusBadRequest, `{"error":"invalid_question"}`)
 			return
 		}
+		if request.Scope == "" {
+			request.Scope = "all"
+		}
+		if request.Scope != "all" && request.Scope != "database" && request.Scope != "microsoft" {
+			jsonResponse(w, http.StatusBadRequest, `{"error":"invalid_search_scope"}`)
+			return
+		}
+		r = r.WithContext(context.WithValue(r.Context(), searchScopeKey{}, request.Scope))
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
 		var requestBytes [16]byte
 		if _, err := rand.Read(requestBytes[:]); err != nil {
@@ -114,6 +131,10 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 			return
 		}
 		requestID := hex.EncodeToString(requestBytes[:])
+		started := time.Now()
+		defer func() {
+			slog.Info("search completed", "requestId", requestID, "scope", request.Scope, "durationMs", time.Since(started).Milliseconds())
+		}()
 		w.Header().Set("X-Request-ID", requestID)
 		outcome := "error"
 		sourceCount := 0
@@ -176,11 +197,35 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 		defer cancel()
 		var selection *postgres.ToolSelection
 		selectionFailure := 0
+		databaseStatus := "not_selected"
 		postgresActive, postgresErr := postgresEnabled(db)
-		if postgresErr == nil && postgresActive && runtime.postgresAvailable {
+		if request.Scope != "microsoft" && postgresErr == nil && postgresActive && principal.DirectoryEmailStatus == "deferred" {
+			principal.DirectoryEmailStatus = "directory_unavailable"
+			if email, lookupErr := graph.DirectoryEmail(ctx, runtime.oboSocket, assertion, principal.ObjectID); lookupErr == nil {
+				principal.VerifiedEmail = email
+				principal.DirectoryEmailStatus = "resolved"
+			}
+		}
+		if request.Scope != "microsoft" {
+			databaseStatus = "disabled"
+		}
+		if request.Scope != "microsoft" && postgresErr == nil && postgresActive && !runtime.postgresAvailable {
+			databaseStatus = "not_configured"
+			selectionFailure = 1
+		}
+		if request.Scope != "microsoft" && postgresErr == nil && postgresActive && runtime.postgresAvailable {
+			databaseStatus = "no_matching_query"
+			catalogStarted := time.Now()
 			tools, catalogErr := approvedPostgresToolsForUser(ctx, db, encryptionKey, runtime.postgres, principal)
-			if catalogErr != nil || len(tools) == 0 || runtime.selectTool == nil {
+			slog.Info("search stage completed", "requestId", requestID, "stage", "database_catalog", "durationMs", time.Since(catalogStarted).Milliseconds())
+			if catalogErr != nil || len(tools) == 0 {
 				selectionFailure = 1
+				databaseStatus = "no_authorized_queries"
+			} else if len(tools) == 1 && (len(tools[0].ProfileConfig) == 0 || string(tools[0].ProfileConfig) == "{}") {
+				selection = &postgres.ToolSelection{ToolID: tools[0].ID, Limit: 3}
+			} else if runtime.selectTool == nil {
+				selectionFailure = 1
+				databaseStatus = "query_selection_failed"
 			} else {
 				selectionPrompt, promptErr := postgres.SelectionPrompt(question, tools)
 				if promptErr != nil {
@@ -196,39 +241,61 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 						jsonResponse(w, http.StatusTooManyRequests, `{"error":"monthly_model_limit_reached"}`)
 						return
 					}
+					selectionStarted := time.Now()
 					raw, selectErr := runtime.selectTool(ctx, configuration.Provider, configuration.Model, configuration.BaseURL, runtime.modelAPIKey, selectionPrompt)
+					slog.Info("search stage completed", "requestId", requestID, "stage", "query_selection", "durationMs", time.Since(selectionStarted).Milliseconds())
 					if selectErr != nil {
 						selectionFailure = 1
+						databaseStatus = "query_selection_failed"
 					} else if selection, err = postgres.ParseToolSelection(raw, tools); err != nil {
 						selectionFailure = 1
 						selection = nil
+						databaseStatus = "query_selection_failed"
 					}
 				}
 			}
 		}
+		ctx = context.WithValue(ctx, databaseSelectionStatusKey{}, databaseStatus)
+		retrievalStarted := time.Now()
 		retrieved, sourceFailures, err := runtime.retrieve(ctx, db, principal, assertion, question, selection)
+		slog.Info("search stage completed", "requestId", requestID, "stage", "retrieval", "durationMs", time.Since(retrievalStarted).Milliseconds())
 		if err != nil {
 			jsonResponse(w, http.StatusServiceUnavailable, `{"error":"unavailable"}`)
 			return
 		}
 		sourceFailures += selectionFailure
+		searchInfo := map[string]any{"scope": request.Scope, "database": databaseStatus, "sources": retrieved.diagnostics}
+		if selection != nil {
+			searchInfo["database"] = "searched"
+			for _, status := range retrieved.diagnostics {
+				if status.Source == "database" {
+					searchInfo["database"] = status.Status
+				}
+			}
+		}
+		for _, status := range retrieved.diagnostics {
+			slog.Info("source search completed", "requestId", requestID, "scope", request.Scope, "source", status.Source, "status", status.Status, "results", status.Results)
+		}
+		if sourceFailures > 0 {
+			searchInfo["warning"] = "Some selected sources could not be searched. The answer may be incomplete."
+		}
 		if retrieved.clarification != nil {
 			outcome = "clarification"
-			writeJSON(w, http.StatusOK, map[string]any{"clarification": retrieved.clarification, "sources": []answerSource{}})
+			writeJSON(w, http.StatusOK, map[string]any{"clarification": retrieved.clarification, "sources": []answerSource{}, "search": searchInfo})
 			return
 		}
 		if len(retrieved.documents)+len(retrieved.records) == 0 {
 			if sourceFailures > 0 {
-				jsonResponse(w, http.StatusServiceUnavailable, `{"error":"source_unavailable"}`)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "source_unavailable", "search": searchInfo})
 				return
 			}
 			outcome = "no_results"
-			writeJSON(w, http.StatusOK, map[string]any{"answer": "I could not find an answer in your connected sources.", "sources": []answerSource{}})
+			writeJSON(w, http.StatusOK, map[string]any{"answer": "I could not find an answer in your selected sources.", "sources": []answerSource{}, "search": searchInfo})
 			return
 		}
 		var excerpts bytes.Buffer
 		sources := make([]answerSource, 0, len(retrieved.documents)+len(retrieved.records))
-		for _, document := range retrieved.documents {
+		for documentIndex, document := range retrieved.documents {
 			filename := document.Name
 			if document.ParserFilename != "" {
 				filename = document.ParserFilename
@@ -257,7 +324,11 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 			}
 			name := escapeSourceCitationTokens(document.Name)
 			_, _ = fmt.Fprintf(&excerpts, "[S%d] File: %s\n%s\n\n", index, name, text)
-			sources = append(sources, answerSource{ID: fmt.Sprintf("S%d", index), Name: document.Name, URL: safeCitationURL(document.WebURL)})
+			kind := "microsoft"
+			if documentIndex < len(retrieved.documentKinds) {
+				kind = retrieved.documentKinds[documentIndex]
+			}
+			sources = append(sources, answerSource{ID: fmt.Sprintf("S%d", index), Name: document.Name, URL: safeCitationURL(document.WebURL), Kind: kind})
 		}
 		for _, record := range retrieved.records {
 			remaining := maxPromptChars - excerpts.Len()
@@ -280,7 +351,7 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 			}
 			name = escapeSourceCitationTokens(name)
 			_, _ = fmt.Fprintf(&excerpts, "[S%d] Business record: %s\n%s\n\n", index, name, text)
-			sources = append(sources, answerSource{ID: fmt.Sprintf("S%d", index), Name: name, URL: safeCitationURL(record.SourceURL)})
+			sources = append(sources, answerSource{ID: fmt.Sprintf("S%d", index), Name: name, URL: safeCitationURL(record.SourceURL), Kind: "database"})
 		}
 		if len(sources) == 0 {
 			outcome = "extraction_failed"
@@ -298,7 +369,9 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 			jsonResponse(w, http.StatusTooManyRequests, `{"error":"monthly_model_limit_reached"}`)
 			return
 		}
+		modelStarted := time.Now()
 		response, err := runtime.generate(ctx, configuration.Provider, configuration.Model, configuration.BaseURL, runtime.modelAPIKey, prompt)
+		slog.Info("search stage completed", "requestId", requestID, "stage", "answer_model", "durationMs", time.Since(modelStarted).Milliseconds())
 		if err != nil {
 			jsonResponse(w, http.StatusBadGateway, `{"error":"model_unavailable"}`)
 			return
@@ -308,7 +381,7 @@ func askHandlerWithRuntime(db *sql.DB, encryptionKey []byte, runtime askRuntime)
 		}
 		sourceCount = len(sources)
 		outcome = "answered"
-		writeJSON(w, http.StatusOK, map[string]any{"answer": response, "sources": sources})
+		writeJSON(w, http.StatusOK, map[string]any{"answer": response, "sources": sources, "search": searchInfo})
 	}
 }
 
@@ -363,54 +436,98 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 		if err != nil {
 			return retrievedSources{}, 0, err
 		}
-		active[i] = value
+		active[i] = value && scopeIncludes(searchScope(ctx), i)
 	}
 	limits := sourceLimits(maxSourceDocuments, active)
 	documents := make([]graph.Document, 0, maxSourceDocuments)
+	documentKinds := make([]string, 0, maxSourceDocuments)
 	records := make([]postgres.BusinessRecord, 0)
 	failures := 0
+	names := []string{"onedrive", "sharepoint", "outlook", "teams-chats", "teams-channels", "database"}
+	diagnostics := make([]sourceSearchStatus, 0, 6)
 	add := func(found []graph.Document, err error) {
 		if err != nil {
 			failures++
-		} else {
-			documents = append(documents, found...)
+		}
+		documents = append(documents, found...)
+		for range found {
+			documentKinds = append(documentKinds, "database")
 		}
 	}
-	if active[0] {
-		found, err := graph.NewOneDrive(oboSocket).RetrieveLimit(ctx, assertion, question, limits[0])
-		add(found, err)
-	}
-	if active[1] {
-		sites, err := sharePointSites(db)
-		if err != nil {
-			return retrievedSources{}, failures, err
-		}
-		connector, used := graph.NewSharePoint(oboSocket), 0
-		for _, site := range sites {
-			found, err := connector.RetrieveLimit(ctx, assertion, site, question, limits[1]-used)
+	jobs := []func() ([]graph.Document, error){
+		func() ([]graph.Document, error) {
+			return graph.NewOneDrive(oboSocket).RetrieveLimit(ctx, assertion, question, limits[0])
+		},
+		func() ([]graph.Document, error) {
+			sites, err := sharePointSites(db)
 			if err != nil {
-				failures++
-				continue
+				return nil, err
 			}
-			documents = append(documents, found...)
-			used += len(found)
-			if used >= limits[1] {
-				break
+			connector := graph.NewSharePoint(oboSocket)
+			var found []graph.Document
+			var failed error
+			for _, site := range sites {
+				hits, err := connector.RetrieveLimit(ctx, assertion, site, question, limits[1]-len(found))
+				if err != nil {
+					failed = err
+					continue
+				}
+				found = append(found, hits...)
+				if len(found) >= limits[1] {
+					break
+				}
+			}
+			return found, failed
+		},
+		func() ([]graph.Document, error) {
+			return graph.NewOutlook(oboSocket).Retrieve(ctx, assertion, question, limits[2])
+		},
+		func() ([]graph.Document, error) {
+			return graph.NewTeamsChats(oboSocket).Retrieve(ctx, assertion, question, limits[3])
+		},
+		func() ([]graph.Document, error) {
+			return graph.NewTeamsChannels(oboSocket).Retrieve(ctx, assertion, question, limits[4])
+		},
+	}
+	type result struct {
+		documents []graph.Document
+		err       error
+	}
+	results := make([]result, 5)
+	var workers sync.WaitGroup
+	for i, job := range jobs {
+		if !active[i] {
+			continue
+		}
+		workers.Add(1)
+		go func(i int, job func() ([]graph.Document, error)) {
+			defer workers.Done()
+			results[i].documents, results[i].err = job()
+		}(i, job)
+	}
+	workers.Wait()
+	for i, entry := range results {
+		if !active[i] {
+			continue
+		}
+		state := "no_results"
+		if len(entry.documents) > 0 {
+			state = "searched"
+		}
+		if entry.err != nil {
+			failures++
+			state = "failed"
+			if len(entry.documents) > 0 {
+				state = "partial"
 			}
 		}
+		diagnostics = append(diagnostics, sourceSearchStatus{Source: names[i], Status: state, Results: len(entry.documents)})
+		documents = append(documents, entry.documents...)
+		for range entry.documents {
+			documentKinds = append(documentKinds, "microsoft")
+		}
 	}
-	if active[2] {
-		found, err := graph.NewOutlook(oboSocket).Retrieve(ctx, assertion, question, limits[2])
-		add(found, err)
-	}
-	if active[3] {
-		found, err := graph.NewTeamsChats(oboSocket).Retrieve(ctx, assertion, question, limits[3])
-		add(found, err)
-	}
-	if active[4] {
-		found, err := graph.NewTeamsChannels(oboSocket).Retrieve(ctx, assertion, question, limits[4])
-		add(found, err)
-	}
+	dbFailuresBefore := failures
 	if active[5] && pg == nil {
 		failures++
 	} else if active[5] && selection != nil && limits[5] > 0 {
@@ -444,7 +561,7 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 							if searchErr != nil {
 								failures++
 							} else if len(candidates) > 1 {
-								return retrievedSources{documents: documents, clarification: &postgres.ProfileClarification{Kind: "ambiguous_entity", Question: "Which matching record did you mean?", Candidates: candidates}}, failures, nil
+								return retrievedSources{documents: documents, documentKinds: documentKinds, diagnostics: diagnostics, clarification: &postgres.ProfileClarification{Kind: "ambiguous_entity", Question: "Which matching record did you mean?", Candidates: candidates}}, failures, nil
 							} else {
 								records = append(records, found...)
 							}
@@ -459,7 +576,7 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 									for _, record := range found {
 										candidates = append(candidates, postgres.ProfileCandidate{ID: record.ID, DisplayName: record.DisplayName})
 									}
-									return retrievedSources{documents: documents, records: records, clarification: &postgres.ProfileClarification{Kind: "ambiguous_entity", Question: "Which matching record did you mean?", Candidates: candidates}}, failures, nil
+									return retrievedSources{documents: documents, documentKinds: documentKinds, diagnostics: diagnostics, records: records, clarification: &postgres.ProfileClarification{Kind: "ambiguous_entity", Question: "Which matching record did you mean?", Candidates: candidates}}, failures, nil
 								}
 							}
 						}
@@ -471,7 +588,29 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 			}
 		}
 	}
-	return retrievedSources{documents: documents, records: records}, failures, nil
+	if active[5] {
+		state := "no_matching_query"
+		if status, ok := ctx.Value(databaseSelectionStatusKey{}).(string); ok && selection == nil {
+			state = status
+		}
+		if selection != nil {
+			state = "no_results"
+		}
+		count := len(records)
+		for _, kind := range documentKinds {
+			if kind == "database" {
+				count++
+			}
+		}
+		if count > 0 {
+			state = "searched"
+		}
+		if failures > dbFailuresBefore {
+			state = "failed"
+		}
+		diagnostics = append(diagnostics, sourceSearchStatus{Source: "database", Status: state, Results: count})
+	}
+	return retrievedSources{documents: documents, documentKinds: documentKinds, diagnostics: diagnostics, records: records}, failures, nil
 }
 
 func sourceLimits(max int, enabled []bool) []int {
