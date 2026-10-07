@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"io"
 	"net"
 	"strings"
 
@@ -21,6 +23,15 @@ func DiscoveryFailureCode(err error) string {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "database_timeout"
+	}
+	// pgx returns a plain error for a server rejecting SSL negotiation.
+	// Match only the exact driver error; never expose raw connection details.
+	if hasDiscoveryCause(err, "server refused TLS connection") {
+		return "database_tls_unavailable"
+	}
+	var record tls.RecordHeaderError
+	if errors.As(err, &record) {
+		return "database_tls_handshake_failed"
 	}
 	var databaseError *pgconn.PgError
 	if errors.As(err, &databaseError) {
@@ -51,5 +62,26 @@ func DiscoveryFailureCode(err error) string {
 	if errors.As(err, &network) {
 		return "database_unreachable"
 	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "database_connection_closed"
+	}
 	return "authorization_metadata_discovery_failed"
+}
+
+func hasDiscoveryCause(err error, message string) bool {
+	if err == nil {
+		return false
+	}
+	if err.Error() == message {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, cause := range joined.Unwrap() {
+			if hasDiscoveryCause(cause, message) {
+				return true
+			}
+		}
+		return false
+	}
+	return hasDiscoveryCause(errors.Unwrap(err), message)
 }

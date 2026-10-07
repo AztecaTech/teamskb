@@ -35,6 +35,8 @@ rules have filtered them.
    The app does not accept a browser-supplied email or fall back to a username.
 2. Set `POSTGRES_DSN` to a dedicated service login and password with verified TLS,
    for example `postgres://iqkb_service:URL_ENCODED_PASSWORD@db.example.com:5432/company?sslmode=verify-full`.
+
+   Dokploy HTTPS for the application does not enable PostgreSQL TLS. The database endpoint must support TLS itself, and its certificate must match the URI hostname and be trusted by the app container. Mapping discovery reports `database_tls_unavailable` if the endpoint refuses PostgreSQL SSL negotiation, `database_tls_handshake_failed` for an invalid TLS response, and `database_connection_closed` if the endpoint closes the connection during setup. These failures happen before table metadata or email mappings can be inspected.
    Administrator-only mapping discovery inspects catalog metadata using the injected URI, including when that URI uses an administrator login. It scans likely email-bearing relations in pages of 25 and reports detected fields without granting search access. Actual user authorization and searches still reject superuser or BYPASSRLS service logins.
 
    The service must not be a superuser or have BYPASSRLS. Use NOINHERIT, grant
