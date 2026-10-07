@@ -92,7 +92,7 @@ export default function PermissionRuleEditor({ labels, resources: evidenceResour
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Permission draft operation failed.'); }
     finally { setBusy(false); }
   }
-  return <div className="query-entry"><h4>Permission rules by detected label</h4><fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+  return <div id="postgres-permission-drafts" className="query-entry"><h4>Permission rules by detected label</h4><fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
     <p className="muted">Each label gets its own draft. Select the resources and fields it may read, then review the row scope. No access is assumed from a label's name.</p>
     <button type="button" disabled={busy || !loaded || resourceBusy} onClick={() => void prepare()}>Prepare mapping drafts automatically</button>
     {resourceMessage && <p role="status">{resourceMessage}</p>}<div className="button-row"><button type="button" disabled={resourceBusy} onClick={() => void loadResources()}>Refresh resource catalog</button>{resourceCursor && <button type="button" disabled={resourceBusy} onClick={() => void loadResources(true)}>Load more resources</button>}</div>

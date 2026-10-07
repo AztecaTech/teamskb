@@ -222,6 +222,7 @@ func run(cfg config) error {
 	publicMux.Handle("/api/postgres/profiles", authenticate(verifier, db, false, postgresProfilesHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/postgres/profiles/", authenticate(verifier, db, false, postgresProfileTestHandler(db, encryptionKey, pg)))
 	publicMux.Handle("POST /api/admin/checks/postgres", authenticate(verifier, db, true, postgresCheckHandler(db, encryptionKey, pg)))
+	publicMux.Handle("GET /api/admin/postgres/readiness", authenticate(verifier, db, true, postgresReadinessHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/postgres/credentials", authenticate(verifier, db, false, postgresCredentialHandler(db, encryptionKey, pg)))
 	publicMux.Handle("PUT /api/postgres/email", authenticate(verifier, db, false, postgresEmailHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/admin/", authenticate(verifier, db, true, http.HandlerFunc(unavailable)))

@@ -45,6 +45,13 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		return rec
 	}
 	authHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresAuthHandler(db, key, pg))
+	readinessHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresReadinessHandler(db, key, pg))
+	if rec := request(readinessHandler, "GET", "/api/admin/postgres/readiness", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"not_selected"`) {
+		t.Fatalf("disabled readiness: %s", rec.Body.String())
+	}
+	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1)`); err != nil {
+		t.Fatal(err)
+	}
 	if rec := request(authHandler, "GET", "/api/admin/postgres/auth/discovery", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ready":true`) || strings.Contains(rec.Body.String(), "app-alex@example.com") {
 		t.Fatalf("bootstrap discovery=%d %s", rec.Code, rec.Body.String())
 	}
@@ -59,6 +66,9 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	}
 	if _, _, _, err := postgresAccess(t.Context(), db, key, pg, alex); err != errPostgresPermissionMappingRequired {
 		t.Fatal("role label alone granted database access")
+	}
+	if rec := request(readinessHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"state":"database_permission_mapping_required"`) || !strings.Contains(rec.Body.String(), `"ready":false`) {
+		t.Fatalf("selected source falsely claimed readiness: %s", rec.Body.String())
 	}
 	labelStatus := authenticate(fixedTokenVerifier{alex}, db, false, postgresCredentialHandler(db, key, pg))
 	if rec := request(labelStatus, "GET", "/api/postgres/credentials", ""); !strings.Contains(rec.Body.String(), `"configured":false`) || !strings.Contains(rec.Body.String(), `"applicationRole":"Reader"`) {
@@ -99,6 +109,9 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	if rec := request(creds, "GET", "/api/postgres/credentials", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mode":"shared-adapter"`) || !strings.Contains(rec.Body.String(), `"mapped":true`) {
 		t.Fatalf("credentials status=%d %s", rec.Code, rec.Body.String())
 	}
+	if rec := request(readinessHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"state":"approved_query_required"`) {
+		t.Fatalf("empty query catalog was considered ready: %s", rec.Body.String())
+	}
 	if rec := request(creds, "PUT", "/api/postgres/credentials", `{"password":"must-not-be-used"}`); rec.Code != 409 {
 		t.Fatal("shared mode accepted user password")
 	}
@@ -128,8 +141,11 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	if _, err = db.Exec(`UPDATE source_boundaries SET enabled=0`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1)`); err != nil {
+	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1) ON CONFLICT(source_id) DO UPDATE SET enabled=1`); err != nil {
 		t.Fatal(err)
+	}
+	if rec := request(readinessHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"ready":true`) {
+		t.Fatalf("verified queries did not become ready: %s", rec.Body.String())
 	}
 	if state, err := checkEnabledSourceAccess(t.Context(), db, key, "assertion", "unused", pg, alex); err != nil || state != "connected" {
 		t.Fatalf("activation state=%s err=%v", state, err)
