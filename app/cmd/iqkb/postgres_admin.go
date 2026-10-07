@@ -482,6 +482,9 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 						resolved, accessErr = scoped.ResolveIdentity(r.Context(), login, password)
 					}
 					mapped = accessErr == nil
+					if errors.Is(accessErr, errPostgresEmailConfirmationRequired) {
+						state = "email_confirmation_required"
+					}
 					if mapped {
 						state = "connected"
 					}

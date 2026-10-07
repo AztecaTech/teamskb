@@ -86,6 +86,7 @@ function App() {
   const [postgresToolApproval, setPostgresToolApproval] = useState('');
   const [postgresCredentialStatus, setPostgresCredentialStatus] = useState<PostgresCredentialStatus | null>(null);
   const [postgresPassword, setPostgresPassword] = useState('');
+  const [databaseEmail, setDatabaseEmail] = useState('');
   const [postgresCredentialMessage, setPostgresCredentialMessage] = useState('');
   const [adminMessage, setAdminMessage] = useState('');
   const [adminBusy, setAdminBusy] = useState(false);
@@ -454,6 +455,7 @@ function App() {
       if (!response.ok) {
         const failure = await response.json() as { error?: string };
         const guidance: Record<string, string> = {
+          database_email_confirmation_required: 'Enter and verify your database email under Database access first.',
           postgres_adapter_required: 'Detect a compatible user mapping, then save the authorization adapter.',
           postgres_verified_email_required: 'Your signed-in Microsoft account needs a verified organizational email. Check User.Read consent and your account profile.',
           database_credentials_required: 'Configure the authorization adapter and your database identity.',
@@ -469,6 +471,18 @@ function App() {
     } finally {
       setAdminBusy(false);
     }
+  }
+
+  async function confirmDatabaseEmail(event: React.FormEvent) {
+    event.preventDefault(); setAdminBusy(true); setPostgresCredentialMessage('');
+    try {
+      const response = await api('/api/postgres/email', { method: 'PUT', body: JSON.stringify({ email: databaseEmail }) });
+      const result = await response.json() as { error?: string; userId?: string; databaseRole?: string };
+      if (!response.ok) throw new Error(`Database email confirmation failed (${result.error || 'unknown'}). Your entered email must match your verified Microsoft email and one active database user with valid permissions.`);
+      setPostgresCredentialMessage(`Email verified. Connected as ${result.userId} with database role ${result.databaseRole}.`);
+      await refreshDatabaseIdentity();
+    } catch (error) { setPostgresCredentialMessage(error instanceof Error ? error.message : 'Database email confirmation failed.'); }
+    finally { setAdminBusy(false); }
   }
 
   async function refreshDatabaseIdentity() {
@@ -773,8 +787,13 @@ function App() {
     {session && postgresCredentialStatus?.available && <section className="setup-card">
       <h2>Your PostgreSQL sign-in</h2>
       {postgresCredentialStatus.mode === 'shared-adapter' ? <>
-        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
+        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_confirmation_required' ? 'Enter your database email below to verify the match before searching.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
         <p className="muted">Your Teams account is matched automatically. The connection is supplied by your organization.</p>
+        <form onSubmit={confirmDatabaseEmail}>
+          <p className="muted">Your verified Microsoft email: {postgresCredentialStatus.verifiedEmail || 'unavailable'}. Your database account email must match it.</p>
+          <label>Database account email<input type="email" value={databaseEmail} onChange={(event) => setDatabaseEmail(event.target.value)} maxLength={254} required autoComplete="email" /></label>
+          <button type="submit" disabled={adminBusy || !postgresCredentialStatus.verifiedEmail || !databaseEmail}>Verify my database email</button>
+        </form>
         <button type="button" disabled={adminBusy} onClick={() => void checkDatabaseIdentity()}>Refresh database access</button>
         {postgresCredentialMessage && <p role="status">{postgresCredentialMessage}</p>}
         {postgresCredentialStatus.configured && postgresProfiles.length > 0 && <div><h3>Business profile tests</h3><p className="muted">Run tests with your resolved permissions. Each profile requires passing tests from two different database users.</p>{postgresProfiles.map((profile) => <div className="button-row" key={profile.id}><span>{profile.label} v{profile.version}</span><button type="button" disabled={adminBusy} onClick={() => void testPostgresProfile(profile.id)}>Test with my permissions</button></div>)}</div>}

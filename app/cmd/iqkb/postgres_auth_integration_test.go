@@ -63,6 +63,21 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 		t.Fatal("non-admin adapter edit allowed")
 	}
 	creds := authenticate(fixedTokenVerifier{alex}, db, false, postgresCredentialHandler(db, key, pg))
+	if rec := request(creds, "GET", "/api/postgres/credentials", ""); !strings.Contains(rec.Body.String(), `"status":"email_confirmation_required"`) {
+		t.Fatalf("confirmation was not required: %s", rec.Body.String())
+	}
+	if _, _, _, err := postgresAccess(t.Context(), db, key, pg, alex); err != errPostgresEmailConfirmationRequired {
+		t.Fatal("unconfirmed user received database access")
+	}
+	for _, user := range []identity.Principal{alex, blair} {
+		emailHandler := authenticate(fixedTokenVerifier{user}, db, false, postgresEmailHandler(db, key, pg))
+		if rec := request(emailHandler, "PUT", "/api/postgres/email", `{"email":"someone-else@example.com"}`); rec.Code != 403 {
+			t.Fatal("another person's email was accepted")
+		}
+		if rec := request(emailHandler, "PUT", "/api/postgres/email", `{"email":"`+strings.ToUpper(user.VerifiedEmail)+`"}`); rec.Code != 200 {
+			t.Fatalf("email confirmation=%d %s", rec.Code, rec.Body.String())
+		}
+	}
 	if rec := request(creds, "GET", "/api/postgres/credentials", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mode":"shared-adapter"`) || !strings.Contains(rec.Body.String(), `"mapped":true`) {
 		t.Fatalf("credentials status=%d %s", rec.Code, rec.Body.String())
 	}

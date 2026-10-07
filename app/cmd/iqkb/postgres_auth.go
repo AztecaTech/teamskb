@@ -16,6 +16,29 @@ import (
 
 var errPostgresAdapterRequired = errors.New("configure a database authorization adapter first")
 var errPostgresEmailRequired = errors.New("trusted directory email is required")
+var errPostgresEmailConfirmationRequired = errors.New("confirm your database email first")
+
+func databaseEmailKey(p identity.Principal) string {
+	return "postgres_email:" + p.TenantID + ":" + p.ObjectID
+}
+
+func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Connector, principal identity.Principal) (*postgres.Connector, string, string, error) {
+	scoped, login, password, err := postgresMappedAccess(ctx, db, key, pg, principal)
+	if err != nil {
+		return nil, "", "", err
+	}
+	adapter, err := loadPostgresAdapter(db)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if adapter != nil {
+		var saved string
+		if err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, databaseEmailKey(principal)).Scan(&saved); err != nil || saved != strings.ToLower(strings.TrimSpace(principal.VerifiedEmail))+":"+adapter.Fingerprint() {
+			return nil, "", "", errPostgresEmailConfirmationRequired
+		}
+	}
+	return scoped, login, password, nil
+}
 
 func loadPostgresAdapter(db *sql.DB) (*postgres.AdapterConfig, error) {
 	var raw []byte
@@ -33,7 +56,7 @@ func loadPostgresAdapter(db *sql.DB) (*postgres.AdapterConfig, error) {
 	return &adapter, nil
 }
 
-func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Connector, principal identity.Principal) (*postgres.Connector, string, string, error) {
+func postgresMappedAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Connector, principal identity.Principal) (*postgres.Connector, string, string, error) {
 	if pg == nil {
 		return nil, "", "", errors.New("PostgreSQL is not configured")
 	}
@@ -63,6 +86,9 @@ func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Co
 }
 
 func postgresAccessFailureCode(err error, fallback string) string {
+	if errors.Is(err, errPostgresEmailConfirmationRequired) {
+		return "database_email_confirmation_required"
+	}
 	if errors.Is(err, errPostgresAdapterRequired) {
 		return "postgres_adapter_required"
 	}
@@ -140,7 +166,7 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 			return
 		}
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
-		scoped, login, password, err := postgresAccess(r.Context(), db, key, pg, principal)
+		scoped, login, password, err := postgresMappedAccess(r.Context(), db, key, pg, principal)
 		if err != nil {
 			writeJSON(w, 409, map[string]string{"error": postgresAccessFailureCode(err, "database_identity_resolution_required")})
 			return

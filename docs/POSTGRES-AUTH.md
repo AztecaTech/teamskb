@@ -150,3 +150,7 @@ It does not connect to the production database or verify live Teams consent.
 
 See the official [Graph user endpoint](https://learn.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0)
 and [PostgreSQL SET ROLE documentation](https://www.postgresql.org/docs/current/sql-set-role.html).
+
+## User email confirmation
+
+In shared-adapter mode, each user enters their database account email under Database access. The server compares it to their verified Microsoft directory email, resolves exactly one active database user, and validates the execution role before saving confirmation for that tenant and Microsoft object ID. No database password is requested. Confirmation is required for database searches, metadata access, and profile tests; adapter changes invalidate it. Runtime queries still recheck the account and permissions. Administrator adapter diagnostics can run before user confirmation. The shared service login must still satisfy the non-superuser and non-BYPASSRLS requirements.

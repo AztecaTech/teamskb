@@ -223,6 +223,7 @@ func run(cfg config) error {
 	publicMux.Handle("/api/postgres/profiles/", authenticate(verifier, db, false, postgresProfileTestHandler(db, encryptionKey, pg)))
 	publicMux.Handle("POST /api/admin/checks/postgres", authenticate(verifier, db, true, postgresCheckHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/postgres/credentials", authenticate(verifier, db, false, postgresCredentialHandler(db, encryptionKey, pg)))
+	publicMux.Handle("PUT /api/postgres/email", authenticate(verifier, db, false, postgresEmailHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/admin/", authenticate(verifier, db, true, http.HandlerFunc(unavailable)))
 	publicServer := newPublicHTTPServer(limitBody(publicMux))
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -783,6 +784,9 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 			}
 			if errors.Is(err, errPostgresEmailRequired) {
 				return sourceAccessFailure("postgres", "postgres_verified_email_required", err)
+			}
+			if errors.Is(err, errPostgresEmailConfirmationRequired) {
+				return sourceAccessFailure("postgres", "database_email_confirmation_required", err)
 			}
 			return sourceAccessFailure("postgres", "postgres_credentials_required", err)
 		}
