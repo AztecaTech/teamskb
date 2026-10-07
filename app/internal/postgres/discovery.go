@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -67,7 +68,7 @@ func (c *Connector) Discover(ctx context.Context, databaseIdentity, password, sc
 	}
 	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
-		return page, errors.New("PostgreSQL discovery failed")
+		return page, fmt.Errorf("PostgreSQL discovery failed: %w", err)
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()

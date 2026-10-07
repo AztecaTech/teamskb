@@ -96,6 +96,10 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminConfig.User, adminConfig.Password = "postgres", "IQKB-test-admin-only"
+	adminConnector := &Connector{template: adminConfig.Copy(), service: adminConfig.Copy()}
+	if _, err := adminConnector.DiscoverAuthorization(t.Context(), "", ""); DiscoveryFailureCode(err) != "unsafe_database_login" {
+		t.Fatalf("unsafe metadata login was not classified: %v", err)
+	}
 	admin, err := pgx.ConnectConfig(t.Context(), adminConfig)
 	if err != nil {
 		t.Fatal(err)

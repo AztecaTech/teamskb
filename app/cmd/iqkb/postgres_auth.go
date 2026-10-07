@@ -72,7 +72,7 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 		defer cancel()
 		result, err := pg.DiscoverAuthorization(ctx, r.URL.Query().Get("afterSchema"), r.URL.Query().Get("afterName"))
 		if err != nil {
-			jsonResponse(w, http.StatusFailedDependency, `{"error":"authorization_metadata_discovery_failed"}`)
+			writeJSON(w, http.StatusFailedDependency, map[string]string{"error": postgres.DiscoveryFailureCode(err)})
 			return
 		}
 		writeJSON(w, http.StatusOK, result)

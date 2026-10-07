@@ -464,7 +464,21 @@ function App() {
     try {
       const after = append && authorizationDiscovery?.nextSchema ? `?afterSchema=${encodeURIComponent(authorizationDiscovery.nextSchema)}&afterName=${encodeURIComponent(authorizationDiscovery.nextName || '')}` : '';
       const response = await api(`/api/admin/postgres/auth/discovery${after}`);
-      if (!response.ok) throw new Error('Mapping discovery could not read metadata. Check the shared database connection and the service login’s metadata privileges.');
+      if (!response.ok) {
+        const failure = await response.json() as { error?: string };
+        const guidance: Record<string, string> = {
+          shared_database_credentials_required: 'POSTGRES_DSN must contain the service username and password. Update Dokploy environment and redeploy.',
+          unsafe_database_login: 'The URI login is a PostgreSQL superuser or has BYPASSRLS. Use a dedicated non-superuser service login without BYPASSRLS so user permissions can be enforced.',
+          database_authentication_failed: 'PostgreSQL rejected the URI credentials or authentication rules. Check the username/password and connection access rules; URL-encode special characters in the password.',
+          database_not_found: 'The database named in POSTGRES_DSN does not exist on that server.',
+          database_tls_verification_failed: 'The database certificate or hostname could not be verified. Configure the trusted CA and matching hostname for sslmode=verify-full.',
+          database_dns_failed: 'The database hostname could not be resolved from the app container. Check the Dokploy network and URI hostname.',
+          database_unreachable: 'The database host/port could not be reached from the app container. Check the Dokploy network, firewall, and database listener.',
+          database_timeout: 'Database discovery timed out. Check connectivity and retry.',
+          metadata_permission_denied: 'The URI login connected but was denied metadata access. Check its database/schema permissions.',
+        };
+        throw new Error(`Mapping discovery failed (${failure.error || 'unknown'}). ${guidance[failure.error || ''] || 'Check the shared database connection and metadata privileges.'}`);
+      }
       const page = await response.json() as AuthorizationDiscovery;
       const candidates = append && authorizationDiscovery ? [...authorizationDiscovery.candidates, ...page.candidates] : page.candidates;
       const discovery = { ...page, candidates };

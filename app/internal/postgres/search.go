@@ -462,14 +462,19 @@ type identityQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+var ErrUnsafeDatabaseRole = errors.New("database login is a superuser or bypasses row security")
+
 func checkExecutionIdentity(ctx context.Context, query identityQuerier, expected string) error {
 	var sessionUser, currentUser string
 	var canLogin, superuser, bypassRLS bool
 	err := query.QueryRow(ctx, `SELECT session_user::text, current_user::text, r.rolcanlogin, r.rolsuper, r.rolbypassrls
 FROM pg_roles r WHERE r.rolname = session_user AND r.rolname = current_user`).
 		Scan(&sessionUser, &currentUser, &canLogin, &superuser, &bypassRLS)
-	if err != nil || !strings.EqualFold(sessionUser, expected) || !strings.EqualFold(currentUser, expected) || !canLogin || superuser || bypassRLS {
+	if err != nil || !strings.EqualFold(sessionUser, expected) || !strings.EqualFold(currentUser, expected) || !canLogin {
 		return errors.New("PostgreSQL authenticated identity does not match the reviewed identity")
+	}
+	if superuser || bypassRLS {
+		return ErrUnsafeDatabaseRole
 	}
 	return nil
 }
