@@ -371,7 +371,10 @@ function App() {
     try {
       const query = afterSchema ? `?afterSchema=${encodeURIComponent(afterSchema)}&afterName=${encodeURIComponent(afterName)}` : '';
       const response = await api(`/api/admin/postgres/discovery${query}`);
-      if (!response.ok) throw new Error('Metadata discovery needs a resolved database user with SELECT access. Check the authorization adapter and your database access.');
+      if (!response.ok) {
+        const failure = await response.json() as { error?: string };
+        throw new Error(`Business metadata discovery failed (${failure.error || 'unknown'}). Complete user mapping with “Detect user mapping and prefill,” then save and check your access before discovering business tables.`);
+      }
       const page = await response.json() as PostgresDiscovery;
       setPostgresDiscovery((current) => append && current ? { ...page, relations: [...current.relations, ...page.relations], columns: [...current.columns, ...page.columns], keys: [...(current.keys ?? []), ...(page.keys ?? [])], relationships: [...(current.relationships ?? []), ...(page.relationships ?? [])] } : page);
       setAdminMessage(`Loaded ${page.relations.length} accessible relations and ${page.columns.length} readable columns. No table rows were read.`);
@@ -448,7 +451,18 @@ function App() {
     setAdminMessage('');
     try {
       const response = await api('/api/admin/checks/postgres', { method: 'POST' });
-      if (!response.ok) throw new Error(sharedDatabaseCredentials ? 'Check your authorization adapter, database access, and approved query catalog. Profiles also need tests from two different database users.' : response.status === 409 ? 'Add a reviewed identity binding, save your own database password, and approve at least one query.' : 'Your database login or an approved query check failed.');
+      if (!response.ok) {
+        const failure = await response.json() as { error?: string };
+        const guidance: Record<string, string> = {
+          postgres_adapter_required: 'Detect a compatible user mapping, then save the authorization adapter.',
+          postgres_verified_email_required: 'Your signed-in Microsoft account needs a verified organizational email. Check User.Read consent and your account profile.',
+          database_credentials_required: 'Configure the authorization adapter and your database identity.',
+          database_identity_check_failed: 'Your database identity could not be resolved or its execution role was rejected. Use Save and check my access to verify your email match and role grants.',
+          approved_query_required: 'Save at least one approved query or business profile.',
+          approved_query_check_failed: 'An approved query could not execute under your database permissions. Check its tables, columns, role grants, and profile validation.',
+        };
+        throw new Error(`PostgreSQL access check failed (${failure.error || 'unknown'}). ${guidance[failure.error || ''] || 'Check your database access.'}`);
+      }
       setAdminMessage('The authenticated database identity and approved queries passed.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'PostgreSQL check failed.');
@@ -480,6 +494,8 @@ function App() {
           database_unreachable: 'The database host/port could not be reached from the app container. Check the Dokploy network, firewall, and database listener.',
           database_timeout: 'Database discovery timed out. Check connectivity and retry.',
           metadata_permission_denied: 'The URI login connected but was denied metadata access. Check its database/schema permissions.',
+          metadata_identity_mismatch: 'The connection starts with a different execution role. Remove an automatic role override from the URI or connection proxy for metadata discovery.',
+          database_request_failed: 'PostgreSQL rejected a connection-setup or metadata command. The stage identifies which part failed.',
         };
         throw new Error(`Mapping discovery failed (${failure.error || 'unknown'}${failure.stage ? `; stage: ${failure.stage}` : ''}). ${guidance[failure.error || ''] || 'Check the shared database connection and metadata privileges.'}`);
       }

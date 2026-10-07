@@ -1,6 +1,29 @@
 package postgres
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestMetadataSessionRequiresUnchangedAuthenticatedRole(t *testing.T) {
+	if !validMetadataSession("postgres", "postgres") {
+		t.Fatal("canonical server identity was rejected")
+	}
+	if validMetadataSession("postgres", "another_role") || validMetadataSession("", "") {
+		t.Fatal("changed or empty session identity was accepted")
+	}
+}
+
+func TestMetadataSetupFailurePreservesStageAndCause(t *testing.T) {
+	err := &AuthorizationDiscoveryError{Stage: "session_identity", Cause: context.DeadlineExceeded}
+	if DiscoveryFailureStage(err) != "session_identity" || DiscoveryFailureCode(err) != "database_timeout" {
+		t.Fatal("setup failure lost its stage or cause")
+	}
+	err.Cause = ErrMetadataIdentityMismatch
+	if DiscoveryFailureCode(err) != "metadata_identity_mismatch" {
+		t.Fatal("identity mismatch was reported as a generic connection error")
+	}
+}
 
 func TestAuthorizationCandidatesRecognizeEmailAliases(t *testing.T) {
 	for _, name := range []string{"UserEmail", "email_address", "primary_email", "mail"} {

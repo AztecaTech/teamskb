@@ -13,6 +13,9 @@ import (
 // Return actionable categories without exposing DSNs, passwords, SQL, or raw
 // server error messages to the browser.
 func DiscoveryFailureCode(err error) string {
+	if errors.Is(err, ErrMetadataIdentityMismatch) {
+		return "metadata_identity_mismatch"
+	}
 	if errors.Is(err, ErrUnsafeDatabaseRole) {
 		return "unsafe_database_login"
 	}

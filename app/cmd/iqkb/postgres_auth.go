@@ -61,6 +61,16 @@ func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Co
 	return pg, login, password, err
 }
 
+func postgresAccessFailureCode(err error, fallback string) string {
+	if errors.Is(err, errPostgresAdapterRequired) {
+		return "postgres_adapter_required"
+	}
+	if errors.Is(err, errPostgresEmailRequired) {
+		return "postgres_verified_email_required"
+	}
+	return fallback
+}
+
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/admin/postgres/auth/discovery", func(w http.ResponseWriter, r *http.Request) {

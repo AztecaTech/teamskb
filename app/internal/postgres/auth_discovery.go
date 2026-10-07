@@ -51,7 +51,7 @@ func (c *Connector) DiscoverAuthorization(ctx context.Context, schemaAfter, name
 	metadata.metadataOnly = true
 	conn, tx, _, err := metadata.beginAuthorized(ctx, c.service.User, c.service.Password)
 	if err != nil {
-		return result, &AuthorizationDiscoveryError{Stage: "connection", Cause: err}
+		return result, err
 	}
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)

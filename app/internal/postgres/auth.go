@@ -53,14 +53,20 @@ func (c *Connector) ForSubject(a AdapterConfig, subject Subject) (*Connector, er
 // transaction. Nothing runs as the service account after resolution.
 func (c *Connector) beginAuthorized(ctx context.Context, login, password string) (*pgx.Conn, pgx.Tx, ResolvedIdentity, error) {
 	var resolved ResolvedIdentity
+	setupError := func(stage string, err error) error {
+		if c.metadataOnly {
+			return &AuthorizationDiscoveryError{Stage: stage, Cause: err}
+		}
+		return err
+	}
 	conn, err := c.connect(ctx, login, password)
 	if err != nil {
-		return nil, nil, resolved, err
+		return nil, nil, resolved, setupError("connection", err)
 	}
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		closeConnection(conn)
-		return nil, nil, resolved, err
+		return nil, nil, resolved, setupError("transaction_begin", err)
 	}
 	fail := func(err error) (*pgx.Conn, pgx.Tx, ResolvedIdentity, error) {
 		_ = tx.Rollback(ctx)
@@ -68,12 +74,18 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		return nil, nil, resolved, err
 	}
 	if err = setLimits(ctx, tx); err != nil {
-		return fail(err)
+		return fail(setupError("session_limits", err))
 	}
 	if c.metadataOnly {
 		var session, current string
-		if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text`).Scan(&session, &current); err != nil || session != login || current != login {
-			return fail(errors.New("metadata connection identity mismatch"))
+		if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text`).Scan(&session, &current); err != nil {
+			return fail(setupError("session_identity", err))
+		}
+		// Proxies may translate a URI login (for example user.project) to a
+		// canonical PostgreSQL session user. Metadata requires an unchanged
+		// authenticated session role, rather than equality with the URI alias.
+		if !validMetadataSession(session, current) {
+			return fail(setupError("session_identity", ErrMetadataIdentityMismatch))
 		}
 		return conn, tx, resolved, nil
 	}
@@ -134,6 +146,12 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		return fail(errors.New("database execution role mismatch"))
 	}
 	return conn, tx, resolved, nil
+}
+
+var ErrMetadataIdentityMismatch = errors.New("metadata connection identity mismatch")
+
+func validMetadataSession(session, current string) bool {
+	return session != "" && session == current
 }
 
 func (c *Connector) ResolveIdentity(ctx context.Context, login, password string) (ResolvedIdentity, error) {

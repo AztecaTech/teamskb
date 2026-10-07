@@ -170,7 +170,7 @@ func postgresHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Connector) h
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
 		pg, login, password, err := postgresAccess(r.Context(), db, encryptionKey, pg, principal)
 		if err != nil {
-			jsonResponse(w, http.StatusConflict, `{"error":"administrator_credentials_required"}`)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": postgresAccessFailureCode(err, "administrator_credentials_required")})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -822,7 +822,7 @@ func postgresCheckHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Connect
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
 		pg, databaseIdentity, password, err := postgresAccess(r.Context(), db, encryptionKey, pg, principal)
 		if err != nil {
-			jsonResponse(w, http.StatusConflict, `{"error":"database_credentials_required"}`)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": postgresAccessFailureCode(err, "database_credentials_required")})
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
