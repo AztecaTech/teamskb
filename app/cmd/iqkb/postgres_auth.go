@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"iq-kbteams/internal/httpx"
@@ -98,6 +99,10 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 	mux.HandleFunc("PUT /api/admin/postgres/auth", func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioReadRequest(r)
 		adapter, decodeErr := httpx.DecodeOne[postgres.AdapterConfig](body)
+		if strings.TrimSpace(adapter.ApprovalRecord) == "" {
+			principal := r.Context().Value(identityContextKey{}).(identity.Principal)
+			adapter.ApprovalRecord = "Administrator " + principal.ObjectID + " saved mapping at " + time.Now().UTC().Format(time.RFC3339)
+		}
 		if adapter.Columns != nil {
 			adapter.TenantScope = ""
 			if adapter.Columns.TenantID == "" {

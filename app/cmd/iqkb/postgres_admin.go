@@ -407,6 +407,12 @@ VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,object_id) DO UPDATE SET verified_emai
 	mux.HandleFunc("PUT /api/admin/postgres/queries", func(w http.ResponseWriter, r *http.Request) {
 		body, err := ioReadRequest(r)
 		tool, decodeErr := httpx.DecodeOne[postgres.QueryTool](body)
+		if strings.TrimSpace(tool.Description) == "" {
+			tool.Description = "Search the configured database source using query " + tool.ID + "."
+		}
+		if strings.TrimSpace(tool.ApprovalRecord) == "" {
+			tool.ApprovalRecord = "Administrator saved query at " + time.Now().UTC().Format(time.RFC3339)
+		}
 		if err != nil || decodeErr != nil || postgres.ValidateQueryTool(tool) != nil {
 			jsonResponse(w, http.StatusBadRequest, `{"error":"invalid_approved_query"}`)
 			return
