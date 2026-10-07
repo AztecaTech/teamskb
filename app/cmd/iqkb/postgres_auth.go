@@ -100,6 +100,20 @@ func postgresAccessFailureCode(err error, fallback string) string {
 
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/postgres/auth/resources", func(w http.ResponseWriter, r *http.Request) {
+		if pg == nil {
+			jsonResponse(w, 503, `{"error":"postgres_not_configured"}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		page, err := pg.DiscoverPermissionResources(ctx, r.URL.Query().Get("afterSchema"), r.URL.Query().Get("afterName"))
+		if err != nil {
+			writeJSON(w, 424, map[string]string{"error": postgres.DiscoveryFailureCode(err)})
+			return
+		}
+		writeJSON(w, 200, page)
+	})
 	mux.HandleFunc("GET /api/admin/postgres/auth/permission-drafts", func(w http.ResponseWriter, r *http.Request) {
 		var raw string
 		err := db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key='postgres_permission_drafts'`).Scan(&raw)

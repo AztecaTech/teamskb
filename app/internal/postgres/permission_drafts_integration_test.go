@@ -67,4 +67,17 @@ CREATE POLICY broad_existing_policy ON iqkb_rule_test.records FOR SELECT TO PUBL
 	if _, err = connector.PreviewPermissionDrafts(t.Context(), drafts); err == nil {
 		t.Fatal("existing execution role could be overwritten")
 	}
+	page, err := connector.DiscoverPermissionResources(t.Context(), "iqkb_rule_test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, resource := range page.Resources {
+		if resource.Schema == "iqkb_rule_test" && resource.Relation == "records" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("business resource without email/permission fields was omitted")
+	}
 }

@@ -74,6 +74,9 @@ func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
 	if rec := request(denied, "GET", "/api/admin/postgres/auth/discovery", ""); rec.Code != 403 {
 		t.Fatal("non-admin bootstrap discovery allowed")
 	}
+	if rec := request(denied, "GET", "/api/admin/postgres/auth/resources", ""); rec.Code != 403 {
+		t.Fatal("non-admin bootstrap resource discovery allowed")
+	}
 	if rec := request(denied, "PUT", "/api/admin/postgres/auth", body); rec.Code != 403 {
 		t.Fatal("non-admin adapter edit allowed")
 	}
