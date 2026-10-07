@@ -158,7 +158,7 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
-	var verifier tokenVerifier = directoryTokenVerifier{base: baseVerifier, db: db, socket: cfg.oboSocket}
+	var verifier tokenVerifier = directoryTokenVerifier{base: baseVerifier, db: db, socket: cfg.oboSocket, shared: pg.SharedCredentialsConfigured()}
 	if err := os.MkdirAll(filepath.Dir(cfg.bridgeSocket), 0700); err != nil {
 		return err
 	}
@@ -643,6 +643,9 @@ func setupHandlerWithCheck(db *sql.DB, bootstrapSecret, apiKey string, encryptio
 			if errors.As(err, &sourceErr) {
 				failure["source"] = sourceErr.source
 			}
+			if failure["source"] == "postgres" && principal.DirectoryEmailStatus != "" {
+				failure["emailStatus"] = principal.DirectoryEmailStatus
+			}
 			slog.Warn("workspace source access check failed", "source", failure["source"], "status", state)
 			writeJSON(w, status, failure)
 			return
@@ -768,11 +771,14 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 		if pg == nil {
 			return sourceAccessFailure("postgres", "postgres_not_configured", errors.New("PostgreSQL is not configured"))
 		}
-		if principal.VerifiedEmail == "" {
-			return sourceAccessFailure("postgres", "postgres_verified_email_required", errors.New("verified organizational email is required"))
-		}
 		pg, databaseIdentity, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 		if err != nil {
+			if errors.Is(err, errPostgresAdapterRequired) {
+				return sourceAccessFailure("postgres", "postgres_adapter_required", err)
+			}
+			if errors.Is(err, errPostgresEmailRequired) {
+				return sourceAccessFailure("postgres", "postgres_verified_email_required", err)
+			}
 			return sourceAccessFailure("postgres", "postgres_credentials_required", err)
 		}
 		if err := pg.CheckIdentity(ctx, databaseIdentity, password); err != nil {

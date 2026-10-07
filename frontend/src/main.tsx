@@ -11,12 +11,20 @@ type SourceStatus = { id: string; kind: string; boundary: string; enabled: boole
 type PostgresIdentity = { objectId: string; verifiedEmail: string; databaseIdentity: string; reviewedBy: string; reviewedAt: string };
 type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind: string; supported: boolean; reason?: string; comment?: string }>; columns: Array<{ schema: string; relation: string; name: string; dataType: string; nullable: boolean; comment?: string }>; keys: Array<{ schema: string; relation: string; kind: string; columns: string[] }>; relationships: Array<{ name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }>; nextSchema?: string; nextName?: string };
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
-type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string };
+type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; emailStatus?: string };
 type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string };
 type PostgresProfileSummary = { id: string; version: number; label: string; capability: string };
 type PostgresProfileTest = { profileId: string; version: number; objectId: string; databaseIdentity: string; testedAt: string; status: string; category: string };
 type PostgresProfilePreview = { version: number; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; parentSQL?: string; parentParameters?: Array<{ name: string; type: string }>; approvalRecord: string; permissionExplanation: string };
 type AskResult = { answer?: string; sources: Array<{ id: string; name: string; url: string }>; clarification?: { kind: string; question: string; candidates: Array<{ id: string; displayName: string }> } };
+
+function directoryEmailHelp(status?: string) {
+  if (status === 'directory_mail_missing') return 'Your Microsoft directory profile has no usable email address. Ask your administrator to populate its mail field; a manually entered database email cannot replace it.';
+  if (status === 'directory_member_required') return 'The current database integration requires a member account in your organization; guest accounts are not supported.';
+  if (status === 'directory_identity_mismatch') return 'The directory profile did not match your Teams account. Sign in again; access remains blocked until the identities match.';
+  if (status === 'directory_unavailable') return 'Microsoft directory lookup failed. Check the deployment’s Graph connectivity and retry.';
+  return 'Check delegated Microsoft Graph User.Read consent on the Entra app identified by APP_CLIENT_ID, verify its client secret, then reopen the Teams app and refresh database access.';
+}
 
 function App() {
   const [message, setMessage] = useState('Connecting to Microsoft Teams…');
@@ -318,7 +326,13 @@ function App() {
     setAdminMessage('');
     try {
       const response = await api('/api/admin/checks/teams-channels', { method: 'POST' });
-      if (!response.ok) throw new Error(response.status === 424 ? 'Grant delegated Team.ReadBasic.All, Channel.ReadBasic.All, and ChannelMessage.Read.All consent, then check again.' : 'The administrator’s joined Teams channels could not be accessed.');
+      const result = await response.json() as { status?: string; stage?: string; upstreamStatus?: number };
+      if (!response.ok) {
+        const stages: Record<string, string> = { token_exchange: 'sign-in token exchange', list_teams: 'listing your teams', list_channels: 'listing channels', read_messages: 'reading channel messages' };
+        const stage = result.stage ? stages[result.stage] || 'channel access' : 'channel access';
+        const advice = result.status === 'consent_required' ? 'Grant delegated Team.ReadBasic.All, Channel.ReadBasic.All, and ChannelMessage.Read.All consent, then sign in again.' : result.status === 'permission_denied' ? 'Confirm your account belongs to an accessible channel and the app has delegated channel permissions. Administrator status alone does not grant private-channel membership.' : result.status === 'invalid_request' ? 'Microsoft rejected the API request. Redeploy the updated app and retry.' : result.status === 'throttled' ? 'Microsoft is throttling requests. Wait briefly and retry.' : result.status === 'timeout' ? 'The request timed out. Retry and check the deployment’s Microsoft Graph connectivity.' : 'Check Microsoft Graph connectivity and the deployment logs, then retry.';
+        throw new Error(`Teams channels failed while ${stage} (${result.status || 'unavailable'}${result.upstreamStatus ? `; Graph HTTP ${result.upstreamStatus}` : ''}). ${advice}`);
+      }
       setAdminMessage('Connected to the administrator’s joined Teams channels.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'Teams channel access check failed.');
@@ -613,11 +627,11 @@ function App() {
         method: 'POST', headers: { 'X-Setup-Secret': bootstrapSecret },
       });
       if (!response.ok) {
-        const failure = await response.json() as { error?: string; status?: string; source?: string };
+        const failure = await response.json() as { error?: string; status?: string; source?: string; emailStatus?: string };
         if (failure.error === 'source_check_failed') {
           const sourceNames: Record<string, string> = { onedrive: 'OneDrive', sharepoint: 'SharePoint', outlook: 'Outlook', 'teams-chats': 'Teams chats', 'teams-channels': 'Teams channels', postgres: 'PostgreSQL' };
           const source = failure.source ? sourceNames[failure.source] || 'A source' : 'A source';
-          const guidance = failure.status === 'consent_required' ? 'Check Microsoft delegated consent and sign in again.' : failure.status === 'permission_denied' ? 'Check the signed-in account’s permissions.' : failure.status === 'not_provisioned' || failure.status === 'not_found' ? 'This source is not provisioned or could not be found for your account.' : failure.source === 'postgres' ? 'Check the database authorization adapter, your access, and the approved queries.' : 'The source could not be reached or its service rejected the request. Check it below and retry.';
+          const guidance = failure.status === 'postgres_adapter_required' ? 'Configure and save the database authorization adapter below before activating.' : failure.status === 'postgres_verified_email_required' ? directoryEmailHelp(failure.emailStatus) : failure.status === 'consent_required' ? 'Check Microsoft delegated consent and sign in again.' : failure.status === 'permission_denied' ? 'Check the signed-in account’s permissions.' : failure.status === 'not_provisioned' || failure.status === 'not_found' ? 'This source is not provisioned or could not be found for your account.' : failure.source === 'postgres' ? 'Check the database authorization adapter, your access, and the approved queries.' : 'The source could not be reached or its service rejected the request. Check it below and retry.';
           setFailedSource(failure.source || '');
           setSetupStep(1);
           throw new Error(`${source} blocked activation (${failure.status || 'unavailable'}). ${guidance} You can disable a source you do not need and activate with the remaining sources.`);
@@ -670,7 +684,7 @@ function App() {
     {session && postgresCredentialStatus?.available && <section className="setup-card">
       <h2>Your PostgreSQL sign-in</h2>
       {postgresCredentialStatus.mode === 'shared-adapter' ? <>
-        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_required' ? 'Your organization email could not be resolved from Microsoft Graph. Ask your administrator to check User.Read consent and your directory email.' : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
+        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
         <p className="muted">Your Teams account is matched automatically. The connection is supplied by your organization.</p>
         <button type="button" disabled={adminBusy} onClick={() => void checkDatabaseIdentity()}>Refresh database access</button>
         {postgresCredentialMessage && <p role="status">{postgresCredentialMessage}</p>}

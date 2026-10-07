@@ -24,9 +24,10 @@ var authorizedClients = map[string]struct{}{
 }
 
 type Principal struct {
-	TenantID      string `json:"tenantId"`
-	ObjectID      string `json:"objectId"`
-	VerifiedEmail string `json:"-"`
+	TenantID             string `json:"tenantId"`
+	ObjectID             string `json:"objectId"`
+	VerifiedEmail        string `json:"-"`
+	DirectoryEmailStatus string `json:"-"`
 }
 
 type Verifier struct {

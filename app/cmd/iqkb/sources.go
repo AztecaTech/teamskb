@@ -358,7 +358,15 @@ func teamsChannelsCheckHandler(socketPath string) http.HandlerFunc {
 			} else if state == "permission_denied" {
 				status = http.StatusForbidden
 			}
-			writeJSON(w, status, map[string]string{"status": state})
+			failure := map[string]any{"status": state}
+			var detail *graph.ChannelCheckError
+			if errors.As(err, &detail) {
+				failure["stage"] = detail.Stage
+				if detail.HTTPStatus != 0 {
+					failure["upstreamStatus"] = detail.HTTPStatus
+				}
+			}
+			writeJSON(w, status, failure)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": state})

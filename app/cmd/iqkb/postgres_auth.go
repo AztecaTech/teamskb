@@ -12,6 +12,9 @@ import (
 	"iq-kbteams/internal/postgres"
 )
 
+var errPostgresAdapterRequired = errors.New("configure a database authorization adapter first")
+var errPostgresEmailRequired = errors.New("trusted directory email is required")
+
 func loadPostgresAdapter(db *sql.DB) (*postgres.AdapterConfig, error) {
 	var raw []byte
 	err := db.QueryRow(`SELECT value FROM settings WHERE key='postgres_auth_adapter'`).Scan(&raw)
@@ -37,11 +40,17 @@ func postgresAccess(ctx context.Context, db *sql.DB, key []byte, pg *postgres.Co
 		return nil, "", "", err
 	}
 	if adapter != nil {
+		if principal.VerifiedEmail == "" {
+			return nil, "", "", errPostgresEmailRequired
+		}
 		scoped, err := pg.ForSubject(*adapter, postgres.Subject{TenantID: principal.TenantID, ObjectID: principal.ObjectID, Email: principal.VerifiedEmail})
 		return scoped, "adapter_user", "adapter", err
 	}
 	if pg.SharedCredentialsConfigured() {
-		return nil, "", "", errors.New("configure a database authorization adapter first")
+		return nil, "", "", errPostgresAdapterRequired
+	}
+	if principal.VerifiedEmail == "" {
+		return nil, "", "", errPostgresEmailRequired
 	}
 	login, err := mappedDatabaseIdentity(ctx, db, principal)
 	if err != nil {

@@ -16,8 +16,14 @@ func TestTeamsChannelsRetrieveUsesAssociatedTeamsAndDelegatedPermissions(t *test
 		case "/v1.0/me/teamwork/associatedTeams":
 			_, _ = w.Write([]byte(`{"value":[{"id":"team-1","displayName":"Research"}]}`))
 		case "/v1.0/teams/team-1/allChannels":
+			if r.URL.Query().Has("$top") {
+				t.Error("unsupported channel list $top")
+			}
 			_, _ = w.Write([]byte(`{"value":[{"id":"channel-1","displayName":"Policies"}]}`))
 		case "/v1.0/teams/team-1/channels/channel-1/messages":
+			if r.URL.Query().Has("$orderby") {
+				t.Error("unsupported channel message $orderby")
+			}
 			if r.URL.Query().Get("$top") != "20" {
 				t.Errorf("message limit=%q", r.URL.Query().Get("$top"))
 			}

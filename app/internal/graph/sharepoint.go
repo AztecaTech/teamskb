@@ -230,6 +230,15 @@ func (s *SharePoint) download(ctx context.Context, token, siteID, itemID string)
 }
 
 func graphFailureState(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	if strings.Contains(err.Error(), "status 400") {
+		return "invalid_request"
+	}
+	if strings.Contains(err.Error(), "status 429") {
+		return "throttled"
+	}
 	if strings.Contains(err.Error(), "status 401") {
 		return "consent_required"
 	}

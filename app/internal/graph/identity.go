@@ -3,11 +3,14 @@ package graph
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 )
+
+type DirectoryIdentityError struct{ State string }
+
+func (e *DirectoryIdentityError) Error() string { return e.State }
 
 // DirectoryEmail resolves the delegated user at the fixed Graph origin and
 // binds the response to the already-verified Teams object ID. No client email
@@ -19,7 +22,7 @@ func DirectoryEmail(ctx context.Context, socket, assertion, objectID string) (st
 func directoryEmail(ctx context.Context, x TokenExchanger, client *http.Client, baseURL, assertion, objectID string) (string, error) {
 	token, err := x.Exchange(ctx, assertion, "identity")
 	if err != nil {
-		return "", errors.New("directory identity consent or token exchange failed")
+		return "", &DirectoryIdentityError{State: "directory_token_exchange_failed"}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/me?$select=id,mail,userType", nil)
 	if err != nil {
@@ -28,7 +31,7 @@ func directoryEmail(ctx context.Context, x TokenExchanger, client *http.Client, 
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", errors.New("directory identity lookup failed")
+		return "", &DirectoryIdentityError{State: "directory_unavailable"}
 	}
 	defer resp.Body.Close()
 	var user struct {
@@ -36,12 +39,28 @@ func directoryEmail(ctx context.Context, x TokenExchanger, client *http.Client, 
 		Mail     string `json:"mail"`
 		UserType string `json:"userType"`
 	}
-	if resp.StatusCode != 200 || json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&user) != nil || !strings.EqualFold(user.ID, objectID) || user.UserType != "Member" {
-		return "", errors.New("directory identity does not match an organization member")
+	if resp.StatusCode != http.StatusOK {
+		state := "directory_unavailable"
+		if resp.StatusCode == http.StatusForbidden {
+			state = "directory_permission_denied"
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			state = "directory_sign_in_required"
+		}
+		return "", &DirectoryIdentityError{State: state}
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&user) != nil {
+		return "", &DirectoryIdentityError{State: "directory_unavailable"}
+	}
+	if !strings.EqualFold(user.ID, objectID) {
+		return "", &DirectoryIdentityError{State: "directory_identity_mismatch"}
+	}
+	if user.UserType != "Member" {
+		return "", &DirectoryIdentityError{State: "directory_member_required"}
 	}
 	email := strings.ToLower(strings.TrimSpace(user.Mail))
 	if !strings.Contains(email, "@") || strings.ContainsAny(email, "\r\n\x00") {
-		return "", errors.New("directory email unavailable")
+		return "", &DirectoryIdentityError{State: "directory_mail_missing"}
 	}
 	return email, nil
 }

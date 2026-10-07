@@ -50,11 +50,11 @@ func newTeamsChannels(exchanger TokenExchanger, baseURL string, client *http.Cli
 func (t *TeamsChannels) Check(ctx context.Context, assertion string) (string, error) {
 	token, err := t.exchanger.Exchange(ctx, assertion, "teams_channels")
 	if err != nil {
-		return "consent_required", err
+		return "consent_required", channelCheckFailure("token_exchange", err)
 	}
 	teams, err := t.get(ctx, token, "/me/teamwork/associatedTeams", nil)
 	if err != nil {
-		return graphFailureState(err), err
+		return graphFailureState(err), channelCheckFailure("list_teams", err)
 	}
 	var result teamListResponse
 	if err := json.Unmarshal(teams, &result); err != nil {
@@ -63,20 +63,54 @@ func (t *TeamsChannels) Check(ctx context.Context, assertion string) (string, er
 	if len(result.Value) == 0 {
 		return "connected", nil
 	}
-	channels, err := t.get(ctx, token, "/teams/"+url.PathEscape(result.Value[0].ID)+"/allChannels?$top=1&$select=id,displayName", nil)
-	if err != nil {
-		return graphFailureState(err), err
+	if len(result.Value) > maxAssociatedTeams {
+		result.Value = result.Value[:maxAssociatedTeams]
 	}
-	var channelResult channelListResponse
-	if err := json.Unmarshal(channels, &channelResult); err != nil {
-		return "unavailable", errors.New("invalid Graph channels response")
-	}
-	if len(channelResult.Value) > 0 {
-		_, err := t.get(ctx, token, "/teams/"+url.PathEscape(result.Value[0].ID)+"/channels/"+url.PathEscape(channelResult.Value[0].ID)+"/messages?$top=1&$orderby=createdDateTime%20desc", nil)
+	var lastFailure error
+	channelsListed := false
+	for _, team := range result.Value {
+		if team.ID == "" {
+			continue
+		}
+		channels, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/allChannels?$select=id,displayName", nil)
 		if err != nil {
-			return graphFailureState(err), err
+			lastFailure = channelCheckFailure("list_channels", err)
+			state := graphFailureState(err)
+			if state == "permission_denied" || state == "not_found" {
+				continue
+			}
+			return state, lastFailure
+		}
+		channelsListed = true
+		var channelResult channelListResponse
+		if err := json.Unmarshal(channels, &channelResult); err != nil {
+			return "unavailable", channelCheckFailure("list_channels", errors.New("invalid Graph channels response"))
+		}
+		if len(channelResult.Value) > maxChannelsPerTeam {
+			channelResult.Value = channelResult.Value[:maxChannelsPerTeam]
+		}
+		for _, channel := range channelResult.Value {
+			if channel.ID == "" {
+				continue
+			}
+			_, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/channels/"+url.PathEscape(channel.ID)+"/messages?$top=1", nil)
+			if err == nil {
+				return "connected", nil
+			}
+			lastFailure = channelCheckFailure("read_messages", err)
+			state := graphFailureState(err)
+			if state != "permission_denied" && state != "not_found" {
+				return state, lastFailure
+			}
 		}
 	}
+	if lastFailure != nil {
+		return graphFailureState(lastFailure), lastFailure
+	}
+	if !channelsListed {
+		return "unavailable", channelCheckFailure("list_channels", errors.New("Graph returned no valid team identities"))
+	}
+
 	return "connected", nil
 }
 
@@ -120,7 +154,7 @@ func (t *TeamsChannels) Retrieve(ctx context.Context, assertion, query string, l
 		if team.ID == "" || budget <= 0 {
 			break
 		}
-		channelsBody, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/allChannels?$top=5&$select=id,displayName,membershipType", &budget)
+		channelsBody, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/allChannels?$select=id,displayName,membershipType", &budget)
 		if err != nil {
 			failures++
 			continue
@@ -137,7 +171,7 @@ func (t *TeamsChannels) Retrieve(ctx context.Context, assertion, query string, l
 			if channel.ID == "" || budget <= 0 {
 				break
 			}
-			messagesBody, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/channels/"+url.PathEscape(channel.ID)+"/messages?$top="+fmt.Sprint(maxMessagesPerChannel)+"&$orderby=createdDateTime%20desc", &budget)
+			messagesBody, err := t.get(ctx, token, "/teams/"+url.PathEscape(team.ID)+"/channels/"+url.PathEscape(channel.ID)+"/messages?$top="+fmt.Sprint(maxMessagesPerChannel)+"", &budget)
 			if err != nil {
 				failures++
 				continue
@@ -219,7 +253,7 @@ func (t *TeamsChannels) get(ctx context.Context, token, path string, budget *int
 		return nil, errors.New("Graph Teams response limit exceeded")
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Graph Teams request returned status %d", response.StatusCode)
+		return nil, &GraphHTTPError{Status: response.StatusCode}
 	}
 	if budget != nil {
 		*budget -= len(body)
