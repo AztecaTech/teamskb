@@ -563,6 +563,9 @@ function App() {
           user_mapping_values_invalid: 'The matched record has missing or incompatible values. Check user ID, role, and the boolean active column.',
           execution_role_invalid: 'The mapped role is invalid or matches the service login. Map to a separate PostgreSQL execution role.',
           execution_role_not_found: 'The user row matched, but its role value is not a PostgreSQL role. Application roles need an authorization adapter that translates them to a database execution role.',
+          execution_role_owns_tables: 'The mapped execution role owns tables and could bypass row policies. Use a non-owning execution role with explicit access grants.',
+          execution_role_switch_failed: 'The connection could not switch to the mapped restricted identity. Database search access was denied.',
+          service_identity_mismatch: 'The connection starts with an unexpected session role. Check database proxy or URI role overrides.',
           execution_role_unsafe: 'The mapped role is a superuser or has BYPASSRLS and cannot enforce per-user access.',
           execution_role_not_granted: 'The matched PostgreSQL execution role is not granted to the URI service login.',
         };

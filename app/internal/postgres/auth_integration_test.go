@@ -168,9 +168,8 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An administrator URI remains unsuitable for user searches in either mode.
-	if _, err := privateScope.ResolveIdentity(t.Context(), "adapter_user", "adapter"); !errors.Is(err, ErrUnsafeDatabaseRole) {
-		t.Fatal("private transport bypassed service role restrictions")
+	if _, err := privateScope.ResolveIdentity(t.Context(), "adapter_user", "adapter"); err != nil {
+		t.Fatalf("privileged bootstrap did not resolve a restricted user: %v", err)
 	}
 	adminConnector := &Connector{template: adminConfig.Copy(), service: adminConfig.Copy()}
 	if result, err := adminConnector.DiscoverAuthorization(t.Context(), "", ""); err != nil || len(result.Candidates) == 0 {
@@ -178,6 +177,41 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	}
 	if _, err := adminConnector.ResolveIdentity(t.Context(), "postgres", "IQKB-test-admin-only"); !errors.Is(err, ErrUnsafeDatabaseRole) {
 		t.Fatal("metadata exception allowed privileged data access")
+	}
+	for _, mode := range []string{"postgres_role", "session_context"} {
+		approved := adapter
+		approved.Mode = mode
+		for _, user := range []string{"alex", "blair"} {
+			email := user + "@example.com"
+			if mode == "session_context" {
+				email = "app-" + email
+			}
+			scope, err := adminConnector.ForSubject(approved, Subject{TenantID: "tenant-one", ObjectID: user, Email: email})
+			if err != nil {
+				t.Fatal(err)
+			}
+			docs, err := scope.Search(t.Context(), "adapter_user", "adapter", "Policy", 5, tool)
+			if err != nil || len(docs) != 1 || docs[0].ID != user+"-doc" {
+				t.Fatalf("privileged bootstrap leaked rows: %#v %v", docs, err)
+			}
+			conn, tx, identity, err := scope.beginAuthorized(t.Context(), "adapter_user", "adapter")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var session, current string
+			err = tx.QueryRow(t.Context(), `SELECT session_user::text,current_user::text`).Scan(&session, &current)
+			if err != nil || session != identity.Role || current != identity.Role {
+				t.Fatal("privileged session was retained")
+			}
+			tx.Rollback(t.Context())
+			closeConnection(conn)
+		}
+	}
+	for _, email := range []string{"missing@example.com", "inactive@example.com", "duplicate@example.com", "unsafe@example.com", "owner@example.com"} {
+		scope, _ := adminConnector.ForSubject(adapter, Subject{TenantID: "tenant-one", ObjectID: "invalid", Email: email})
+		if _, err := scope.ResolveIdentity(t.Context(), "adapter_user", "adapter"); err == nil {
+			t.Fatalf("privileged bootstrap authorized %s", email)
+		}
 	}
 	admin, err := pgx.ConnectConfig(t.Context(), adminConfig)
 	if err != nil {

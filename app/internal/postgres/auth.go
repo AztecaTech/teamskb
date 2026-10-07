@@ -142,8 +142,10 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 		}
 		return conn, tx, ResolvedIdentity{UserID: login, Role: login}, nil
 	}
-	if err = checkExecutionIdentity(ctx, tx, c.service.User); err != nil {
-		return fail(err)
+	var serviceSession, serviceCurrent string
+	var serviceSuperuser bool
+	if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text,r.rolsuper FROM pg_roles r WHERE r.rolname=current_user`).Scan(&serviceSession, &serviceCurrent, &serviceSuperuser); err != nil || !validMetadataSession(serviceSession, serviceCurrent) {
+		return fail(&AuthorizationError{Code: "service_identity_mismatch", Cause: err})
 	}
 	relation := pgx.Identifier{c.adapter.Schema, c.adapter.Relation}.Sanitize()
 	columns := AuthorizationColumns{UserID: "user_id", Role: "database_role", PermissionVersion: "permission_version", Active: "active", TenantID: "tenant_id", Email: "email"}
@@ -189,7 +191,7 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 {
 		return fail(&AuthorizationError{Code: "user_mapping_values_invalid"})
 	}
-	if !ValidDatabaseIdentity(resolved.Role) || resolved.Role == c.service.User {
+	if !ValidDatabaseIdentity(resolved.Role) || resolved.Role == c.service.User || resolved.Role == serviceSession {
 		return fail(&AuthorizationError{Code: "execution_role_invalid"})
 	}
 	var unsafe bool
@@ -201,10 +203,17 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if unsafe {
 		return fail(&AuthorizationError{Code: "execution_role_unsafe"})
 	}
-	if c.adapter.Mode == "session_context" {
+	{
 		var ownsTables bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_class WHERE relowner=(SELECT oid FROM pg_roles WHERE rolname=$1) AND relkind IN ('r','p'))`, resolved.Role).Scan(&ownsTables); err != nil || ownsTables {
-			return fail(errors.New("application authorization requires a non-owning execution role"))
+			return fail(&AuthorizationError{Code: "execution_role_owns_tables", Cause: err})
+		}
+	}
+	if serviceSuperuser {
+		// A privileged bootstrap connection must relinquish both session and
+		// execution identity before returning a transaction to search callers.
+		if _, err = tx.Exec(ctx, `SET LOCAL SESSION AUTHORIZATION `+pgx.Identifier{resolved.Role}.Sanitize()); err != nil {
+			return fail(&AuthorizationError{Code: "execution_role_switch_failed", Cause: err})
 		}
 	}
 	if _, err = tx.Exec(ctx, `SET LOCAL ROLE `+pgx.Identifier{resolved.Role}.Sanitize()); err != nil {
@@ -222,9 +231,10 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 			return fail(err)
 		}
 	}
-	var current string
-	if err = tx.QueryRow(ctx, `SELECT current_user::text`).Scan(&current); err != nil || current != resolved.Role {
-		return fail(errors.New("database execution role mismatch"))
+	var current, session string
+	var effectiveUnsafe bool
+	if err = tx.QueryRow(ctx, `SELECT current_user::text,session_user::text,r.rolsuper OR r.rolbypassrls FROM pg_roles r WHERE r.rolname=current_user`).Scan(&current, &session, &effectiveUnsafe); err != nil || current != resolved.Role || effectiveUnsafe || (serviceSuperuser && session != resolved.Role) {
+		return fail(&AuthorizationError{Code: "execution_role_switch_failed", Cause: err})
 	}
 	return conn, tx, resolved, nil
 }
