@@ -46,6 +46,7 @@ type Connector struct {
 	template, service *pgx.ConnConfig
 	adapter           *AdapterConfig
 	subject           *Subject
+	metadataOnly      bool
 }
 
 func Open(_ context.Context, connectionString string) (*Connector, error) {

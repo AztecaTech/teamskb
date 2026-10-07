@@ -70,6 +70,13 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if err = setLimits(ctx, tx); err != nil {
 		return fail(err)
 	}
+	if c.metadataOnly {
+		var session, current string
+		if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text`).Scan(&session, &current); err != nil || session != login || current != login {
+			return fail(errors.New("metadata connection identity mismatch"))
+		}
+		return conn, tx, resolved, nil
+	}
 	if c.adapter == nil {
 		if err = checkExecutionIdentity(ctx, tx, login); err != nil {
 			return fail(err)

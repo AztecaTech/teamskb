@@ -105,8 +105,11 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 	}
 	adminConfig.User, adminConfig.Password = "postgres", "IQKB-test-admin-only"
 	adminConnector := &Connector{template: adminConfig.Copy(), service: adminConfig.Copy()}
-	if _, err := adminConnector.DiscoverAuthorization(t.Context(), "", ""); DiscoveryFailureCode(err) != "unsafe_database_login" {
-		t.Fatalf("unsafe metadata login was not classified: %v", err)
+	if result, err := adminConnector.DiscoverAuthorization(t.Context(), "", ""); err != nil || len(result.Candidates) == 0 {
+		t.Fatalf("administrator-only metadata discovery failed: %v", err)
+	}
+	if _, err := adminConnector.ResolveIdentity(t.Context(), "postgres", "IQKB-test-admin-only"); !errors.Is(err, ErrUnsafeDatabaseRole) {
+		t.Fatal("metadata exception allowed privileged data access")
 	}
 	admin, err := pgx.ConnectConfig(t.Context(), adminConfig)
 	if err != nil {

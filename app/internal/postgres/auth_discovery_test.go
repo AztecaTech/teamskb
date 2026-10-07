@@ -2,6 +2,16 @@ package postgres
 
 import "testing"
 
+func TestAuthorizationCandidatesRecognizeEmailAliases(t *testing.T) {
+	for _, name := range []string{"UserEmail", "email_address", "primary_email", "mail"} {
+		page := DiscoveryPage{Relations: []DiscoveredRelation{{Schema: "public", Name: "members"}}, Columns: []DiscoveredColumn{{Schema: "public", Relation: "members", Name: name, DataType: "text"}}}
+		candidates := authorizationCandidates(page)
+		if len(candidates) != 1 || candidates[0].Ready || len(candidates[0].Columns) != 1 {
+			t.Fatalf("alias %s: %#v", name, candidates)
+		}
+	}
+}
+
 func TestAuthorizationCandidatesRequireTheCompleteAdapterContract(t *testing.T) {
 	page := DiscoveryPage{Relations: []DiscoveredRelation{{Schema: "auth", Name: "complete"}, {Schema: "auth", Name: "ordinary_users"}}}
 	for _, name := range []string{"tenant_id", "email", "user_id", "database_role", "active", "permission_version"} {

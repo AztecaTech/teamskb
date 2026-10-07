@@ -14,7 +14,7 @@ type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
 type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; emailStatus?: string };
 type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string };
-type AuthorizationCandidate = { schema: string; relation: string; ready: boolean; missingColumns: string[] };
+type AuthorizationCandidate = { schema: string; relation: string; ready: boolean; missingColumns: string[]; columns?: { name: string; dataType: string }[] };
 type AuthorizationDiscovery = { candidates: AuthorizationCandidate[]; nextSchema?: string; nextName?: string };
 type PostgresProfileSummary = { id: string; version: number; label: string; capability: string };
 type PostgresProfileTest = { profileId: string; version: number; objectId: string; databaseIdentity: string; testedAt: string; status: string; category: string };
@@ -51,6 +51,7 @@ function App() {
   const [sharedDatabaseCredentials, setSharedDatabaseCredentials] = useState(false);
   const [postgresAuth, setPostgresAuth] = useState<PostgresAuthAdapter>({ mode: 'postgres_role', schema: '', relation: '', approvalRecord: '' });
   const [postgresAuthSaved, setPostgresAuthSaved] = useState(false);
+  const [mappingMessage, setMappingMessage] = useState('');
   const [authorizationDiscovery, setAuthorizationDiscovery] = useState<AuthorizationDiscovery | null>(null);
   const [postgresEnabled, setPostgresEnabled] = useState(false);
   const [postgresObjectId, setPostgresObjectId] = useState('');
@@ -463,12 +464,12 @@ function App() {
   }
 
   async function detectDatabaseMapping(append = false) {
-    setAdminBusy(true); setAdminMessage('');
+    setAdminBusy(true); setMappingMessage('Inspecting database metadata…');
     try {
       const after = append && authorizationDiscovery?.nextSchema ? `?afterSchema=${encodeURIComponent(authorizationDiscovery.nextSchema)}&afterName=${encodeURIComponent(authorizationDiscovery.nextName || '')}` : '';
       const response = await api(`/api/admin/postgres/auth/discovery${after}`);
       if (!response.ok) {
-        const failure = await response.json() as { error?: string };
+        const failure = await response.json() as { error?: string; stage?: string };
         const guidance: Record<string, string> = {
           shared_database_credentials_required: 'POSTGRES_DSN must contain the service username and password. Update Dokploy environment and redeploy.',
           unsafe_database_login: 'The URI login is a PostgreSQL superuser or has BYPASSRLS. Use a dedicated non-superuser service login without BYPASSRLS so user permissions can be enforced.',
@@ -480,7 +481,7 @@ function App() {
           database_timeout: 'Database discovery timed out. Check connectivity and retry.',
           metadata_permission_denied: 'The URI login connected but was denied metadata access. Check its database/schema permissions.',
         };
-        throw new Error(`Mapping discovery failed (${failure.error || 'unknown'}). ${guidance[failure.error || ''] || 'Check the shared database connection and metadata privileges.'}`);
+        throw new Error(`Mapping discovery failed (${failure.error || 'unknown'}${failure.stage ? `; stage: ${failure.stage}` : ''}). ${guidance[failure.error || ''] || 'Check the shared database connection and metadata privileges.'}`);
       }
       const page = await response.json() as AuthorizationDiscovery;
       const candidates = append && authorizationDiscovery ? [...authorizationDiscovery.candidates, ...page.candidates] : page.candidates;
@@ -488,8 +489,8 @@ function App() {
       setAuthorizationDiscovery(discovery);
       const prefilled = authorizationPrefill(postgresAuth, candidates, !page.nextSchema);
       if (prefilled !== postgresAuth) { setPostgresAuth(prefilled); setPostgresAuthSaved(false); }
-      setAdminMessage(prefilled !== postgresAuth ? 'Compatible user mapping detected. Schema and view name are prefilled for review. Save and check your access to verify the actual email match and permissions.' : page.nextSchema ? 'More metadata is available. Load the next page before choosing an automatic mapping.' : candidates.some((candidate) => candidate.ready) ? 'Choose a compatible mapping below. Your existing entries have been preserved.' : 'No complete authorization mapping was found. Detected user tables are listed below with missing fields; their permission mapping still needs configuration.');
-    } catch (error) { setAdminMessage(error instanceof Error ? error.message : 'Mapping discovery failed.'); }
+      setMappingMessage(prefilled !== postgresAuth ? 'Compatible user mapping detected. Schema and view name are prefilled for review. Save and check your access to verify the actual email match and permissions.' : page.nextSchema ? 'More metadata is available. Load the next page before choosing an automatic mapping.' : candidates.some((candidate) => candidate.ready) ? 'Choose a compatible mapping below. Your existing entries have been preserved.' : 'No complete authorization mapping was found. Detected user tables are listed below with missing fields; their permission mapping still needs configuration.');
+    } catch (error) { setMappingMessage(error instanceof Error ? error.message : 'Mapping discovery failed.'); }
     finally { setAdminBusy(false); }
   }
 
@@ -811,7 +812,8 @@ function App() {
         <p className="muted">Connect using Dokploy credentials, match each Teams email to a database user, and apply that user's permissions. An administrator configures the adapter once.</p>
         <p className="muted">{sharedDatabaseCredentials ? 'Shared database credentials are configured.' : 'Add the service username and password to POSTGRES_DSN in Dokploy and redeploy to use automatic matching. The legacy per-user login flow remains available below.'}</p>
         <button type="button" disabled={adminBusy || !sharedDatabaseCredentials} onClick={() => void detectDatabaseMapping()}>Detect user mapping and prefill</button>
-        {authorizationDiscovery && <div className="query-entry"><h4>Detected user mappings</h4>{authorizationDiscovery.candidates.map((candidate) => <div key={`${candidate.schema}.${candidate.relation}`}><strong>{candidate.schema}.{candidate.relation}</strong>{candidate.ready ? <button type="button" disabled={adminBusy} onClick={() => { setPostgresAuth({ ...postgresAuth, schema: candidate.schema, relation: candidate.relation }); setPostgresAuthSaved(false); setAdminMessage('Mapping fields filled from the selected relation. Review and save to check your access.'); }}>Use this mapping</button> : <p className="muted">Incomplete mapping: missing {candidate.missingColumns.join(', ') || 'supported schema or relation name'}.</p>}</div>)}{authorizationDiscovery.candidates.length === 0 && <p className="muted">No user mapping candidates on this metadata page.</p>}{authorizationDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void detectDatabaseMapping(true)}>Load next metadata page</button>}</div>}
+        {mappingMessage && <p role="status">{mappingMessage}</p>}
+        {authorizationDiscovery && <div className="query-entry"><h4>Detected user mappings</h4>{authorizationDiscovery.candidates.map((candidate) => <div key={`${candidate.schema}.${candidate.relation}`}><strong>{candidate.schema}.{candidate.relation}</strong>{candidate.columns && <p className="muted">Detected fields: {candidate.columns.map((column) => column.name).join(', ')}.</p>}{candidate.ready ? <button type="button" disabled={adminBusy} onClick={() => { setPostgresAuth({ ...postgresAuth, schema: candidate.schema, relation: candidate.relation }); setPostgresAuthSaved(false); setAdminMessage('Mapping fields filled from the selected relation. Review and save to check your access.'); }}>Use this mapping</button> : <p className="muted">Incomplete mapping: missing {candidate.missingColumns.join(', ') || 'supported schema or relation name'}.</p>}</div>)}{authorizationDiscovery.candidates.length === 0 && <p className="muted">No user mapping candidates on this metadata page.</p>}{authorizationDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void detectDatabaseMapping(true)}>Load next metadata page</button>}</div>}
         <form className="admin-form" onSubmit={(event) => void savePostgresAuth(event)}>
           <label>Permission system<select value={postgresAuth.mode} onChange={(event) => { setPostgresAuth({ ...postgresAuth, mode: event.target.value }); setPostgresAuthSaved(false); }}><option value="postgres_role">PostgreSQL roles and row policies</option><option value="session_context">Application auth with database row policies</option></select></label>
           <label>Authorization view schema<input value={postgresAuth.schema} onChange={(event) => { setPostgresAuth({ ...postgresAuth, schema: event.target.value }); setPostgresAuthSaved(false); }} maxLength={63} required placeholder="iqkb_auth" /></label>
