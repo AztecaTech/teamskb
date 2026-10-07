@@ -489,7 +489,7 @@ function App() {
           unsafe_database_login: 'The URI login is a PostgreSQL superuser or has BYPASSRLS. Use a dedicated non-superuser service login without BYPASSRLS so user permissions can be enforced.',
           database_authentication_failed: 'PostgreSQL rejected the URI credentials or authentication rules. Check the username/password and connection access rules; URL-encode special characters in the password.',
           database_not_found: 'The database named in POSTGRES_DSN does not exist on that server.',
-          database_private_endpoint_required: 'Private-network mode cannot connect to a public address. Use the internal Dokploy database hostname and ensure both services share its private network.',
+          database_private_endpoint_required: 'Private-network mode cannot connect to a public address. Use the internal Dokploy hostname for private_network mode, or explicitly configure external_plaintext with sslmode=disable for your external non-TLS endpoint.',
           database_tls_unavailable: 'The PostgreSQL endpoint refused TLS. Enable TLS on the database or connect through its TLS-enabled endpoint. A full URI alone does not enable TLS on the server.',
           database_tls_handshake_failed: 'The endpoint did not complete a valid TLS handshake. Check the PostgreSQL hostname/port and TLS configuration.',
           database_connection_closed: 'The server or proxy closed the connection before setup completed. Check the PostgreSQL endpoint and proxy connection settings.',

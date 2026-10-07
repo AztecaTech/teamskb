@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"net/url"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -104,6 +105,29 @@ func TestPostgresAdapterPermissionsIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	adminConfig.User, adminConfig.Password = "postgres", "IQKB-test-admin-only"
+	externalURI, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := externalURI.Query()
+	params.Set("sslmode", "disable")
+	externalURI.RawQuery = params.Encode()
+	externalConnector, err := OpenWithMode(t.Context(), externalURI.String(), "external_plaintext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := externalConnector.DiscoverAuthorization(t.Context(), "", ""); err != nil || len(result.Candidates) == 0 {
+		t.Fatalf("external plaintext mapping discovery failed: %v", err)
+	}
+	for _, email := range []string{"alex@example.com", "blair@example.com"} {
+		user, err := externalConnector.ForSubject(adapter, Subject{TenantID: "tenant-one", ObjectID: "external-object", Email: email})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if documents, err := user.Search(t.Context(), "adapter_user", "adapter", "Policy", 5, tool); err != nil || len(documents) != 1 {
+			t.Fatalf("external plaintext authorized search for %s: count=%d err=%v", email, len(documents), err)
+		}
+	}
 	privateService := connector.service.Copy()
 	privateService.TLSConfig, privateService.Fallbacks = nil, nil
 	privateService.DialFunc = dialPrivatePostgres

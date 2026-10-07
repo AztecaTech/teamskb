@@ -64,15 +64,19 @@ func OpenWithMode(_ context.Context, connectionString, mode string) (*Connector,
 	switch mode {
 	case "", "verify_full":
 		if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName == "" {
-			return nil, errors.New("PostgreSQL requires sslmode=verify-full; for a private Dokploy network explicitly set POSTGRES_CONNECTION_MODE=private_network and sslmode=disable")
+			return nil, errors.New("PostgreSQL requires sslmode=verify-full; for non-TLS connections explicitly set POSTGRES_CONNECTION_MODE=private_network or external_plaintext and sslmode=disable")
 		}
 	case "private_network":
 		if config.TLSConfig != nil || len(config.Fallbacks) != 0 || strings.HasPrefix(config.Host, "/") {
 			return nil, errors.New("private_network PostgreSQL mode requires a TCP URI with sslmode=disable")
 		}
 		config.DialFunc = dialPrivatePostgres
+	case "external_plaintext":
+		if config.TLSConfig != nil || len(config.Fallbacks) != 0 || strings.HasPrefix(config.Host, "/") {
+			return nil, errors.New("external_plaintext PostgreSQL mode requires a TCP URI with sslmode=disable")
+		}
 	default:
-		return nil, errors.New("POSTGRES_CONNECTION_MODE must be verify_full or private_network")
+		return nil, errors.New("POSTGRES_CONNECTION_MODE must be verify_full, private_network, or external_plaintext")
 	}
 	service := config.Copy()
 	config.User, config.Password = "", ""
