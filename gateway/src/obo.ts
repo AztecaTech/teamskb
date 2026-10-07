@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import type { ConfidentialClientApplication } from '@azure/msal-node';
 
 const graphScopes = {
+  identity: ['https://graph.microsoft.com/User.Read'],
   onedrive: ['https://graph.microsoft.com/Files.Read'],
   sharepoint: ['https://graph.microsoft.com/Sites.Read.All'],
   outlook: ['https://graph.microsoft.com/Mail.Read'],

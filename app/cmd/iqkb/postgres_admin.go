@@ -58,11 +58,7 @@ func prepareBusinessProfile(ctx context.Context, db *sql.DB, encryptionKey []byt
 	if pg == nil {
 		return postgres.QueryTool{}, errProfilePostgresUnavailable
 	}
-	login, err := mappedDatabaseIdentity(ctx, db, principal)
-	if err != nil {
-		return postgres.QueryTool{}, errProfileCredentialsRequired
-	}
-	password, err := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
+	pg, login, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 	if err != nil {
 		return postgres.QueryTool{}, errProfileCredentialsRequired
 	}
@@ -172,9 +168,8 @@ func postgresHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Connector) h
 			return
 		}
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
-		login, err := mappedDatabaseIdentity(r.Context(), db, principal)
-		password, passwordErr := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
-		if err != nil || passwordErr != nil {
+		pg, login, password, err := postgresAccess(r.Context(), db, encryptionKey, pg, principal)
+		if err != nil {
 			jsonResponse(w, http.StatusConflict, `{"error":"administrator_credentials_required"}`)
 			return
 		}
@@ -193,11 +188,20 @@ func postgresHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Connector) h
 		if err == nil {
 			count = len(tools)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"configured": pg != nil, "queryCount": count, "credentialMode": "per-user-password"})
+		writeJSON(w, http.StatusOK, map[string]any{"configured": pg != nil, "queryCount": count, "credentialMode": func() string {
+			if pg.SharedCredentialsConfigured() {
+				return "shared-adapter"
+			}
+			return "per-user-password"
+		}()})
 	})
 	mux.HandleFunc("GET /api/admin/postgres/profile-tests", func(w http.ResponseWriter, r *http.Request) {
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
-		rows, err := db.QueryContext(r.Context(), `SELECT tool_id,profile_version,object_id,database_identity,tested_at,outcome,error_category FROM postgres_profile_tests WHERE tenant_id=? ORDER BY tool_id,object_id`, strings.ToLower(principal.TenantID))
+		query := `SELECT tool_id,profile_version,object_id,database_identity,tested_at,outcome,error_category FROM postgres_profile_tests WHERE tenant_id=? ORDER BY tool_id,object_id`
+		if pg.SharedCredentialsConfigured() {
+			query = `SELECT t.tool_id,q.version,t.object_id,t.database_role,t.tested_at,t.outcome,'' FROM postgres_adapter_profile_tests t JOIN query_tools q ON q.tool_id=t.tool_id WHERE t.tenant_id=? ORDER BY t.tool_id,t.object_id`
+		}
+		rows, err := db.QueryContext(r.Context(), query, strings.ToLower(principal.TenantID))
 		if err != nil {
 			jsonResponse(w, http.StatusServiceUnavailable, `{"error":"profile_tests_unavailable"}`)
 			return
@@ -454,6 +458,32 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/postgres/credentials", func(w http.ResponseWriter, r *http.Request) {
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
+		if pg.SharedCredentialsConfigured() {
+			adapter, err := loadPostgresAdapter(db)
+			if err != nil {
+				jsonResponse(w, 503, `{"error":"adapter_unavailable"}`)
+				return
+			}
+			state := "adapter_required"
+			mapped := false
+			var resolved postgres.ResolvedIdentity
+			if adapter != nil {
+				state = "email_required"
+				if principal.VerifiedEmail != "" {
+					state = "user_not_authorized"
+					scoped, login, password, accessErr := postgresAccess(r.Context(), db, encryptionKey, pg, principal)
+					if accessErr == nil {
+						resolved, accessErr = scoped.ResolveIdentity(r.Context(), login, password)
+					}
+					mapped = accessErr == nil
+					if mapped {
+						state = "connected"
+					}
+				}
+			}
+			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "mode": "shared-adapter", "status": state, "userId": resolved.UserID, "databaseRole": resolved.Role})
+			return
+		}
 		mapped := false
 		if principal.VerifiedEmail != "" {
 			_, mappingErr := mappedDatabaseIdentity(r.Context(), db, principal)
@@ -465,6 +495,10 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 	mux.HandleFunc("PUT /api/postgres/credentials", func(w http.ResponseWriter, r *http.Request) {
 		if pg == nil {
 			jsonResponse(w, http.StatusServiceUnavailable, `{"error":"postgres_not_configured"}`)
+			return
+		}
+		if pg.SharedCredentialsConfigured() {
+			jsonResponse(w, 409, `{"error":"shared_adapter_does_not_use_user_passwords"}`)
 			return
 		}
 		body, err := ioReadRequest(r)
@@ -559,11 +593,7 @@ func approvedPostgresToolsForUser(ctx context.Context, db *sql.DB, encryptionKey
 	}
 	checkAllCtx, cancelAll := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelAll()
-	login, err := mappedDatabaseIdentity(ctx, db, principal)
-	if err != nil {
-		return nil, err
-	}
-	password, err := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
+	pg, login, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 	if err != nil {
 		return nil, err
 	}
@@ -609,6 +639,10 @@ func postgresProfileTestHandler(db *sql.DB, encryptionKey []byte, pg *postgres.C
 			return
 		}
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
+		if pg.SharedCredentialsConfigured() {
+			testAdapterProfile(w, r, db, encryptionKey, pg, principal)
+			return
+		}
 		snapshot, password, err := loadProfileTestSnapshot(r.Context(), db, encryptionKey, principal, r.PathValue("toolID"))
 		if err != nil {
 			jsonResponse(w, http.StatusConflict, `{"error":"reviewed_identity_and_own_credentials_required"}`)
@@ -786,12 +820,7 @@ func postgresCheckHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Connect
 			return
 		}
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
-		databaseIdentity, err := mappedDatabaseIdentity(r.Context(), db, principal)
-		if err != nil {
-			jsonResponse(w, http.StatusConflict, `{"error":"identity_mapping_required"}`)
-			return
-		}
-		password, err := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
+		pg, databaseIdentity, password, err := postgresAccess(r.Context(), db, encryptionKey, pg, principal)
 		if err != nil {
 			jsonResponse(w, http.StatusConflict, `{"error":"database_credentials_required"}`)
 			return

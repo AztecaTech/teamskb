@@ -13,7 +13,7 @@ var migrations embed.FS
 
 var guid = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-const latestSchemaVersion = 8
+const latestSchemaVersion = 9
 
 func SeedAdmin(db *sql.DB, tenantID, objectID string) error {
 	if !guid.MatchString(tenantID) || !guid.MatchString(objectID) {
@@ -101,6 +101,8 @@ func migrationName(version int) string {
 		return "postgres_profile_test_generations"
 	case 8:
 		return "audit_event_capacity"
+	case 9:
+		return "postgres_auth_adapter"
 	default:
 		return "unknown"
 	}

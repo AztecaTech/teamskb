@@ -11,7 +11,8 @@ type SourceStatus = { id: string; kind: string; boundary: string; enabled: boole
 type PostgresIdentity = { objectId: string; verifiedEmail: string; databaseIdentity: string; reviewedBy: string; reviewedAt: string };
 type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind: string; supported: boolean; reason?: string; comment?: string }>; columns: Array<{ schema: string; relation: string; name: string; dataType: string; nullable: boolean; comment?: string }>; keys: Array<{ schema: string; relation: string; kind: string; columns: string[] }>; relationships: Array<{ name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }>; nextSchema?: string; nextName?: string };
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
-type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string };
+type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string };
+type PostgresAuthAdapter = { mode: string; schema: string; relation: string; approvalRecord: string };
 type PostgresProfileSummary = { id: string; version: number; label: string; capability: string };
 type PostgresProfileTest = { profileId: string; version: number; objectId: string; databaseIdentity: string; testedAt: string; status: string; category: string };
 type PostgresProfilePreview = { version: number; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; parentSQL?: string; parentParameters?: Array<{ name: string; type: string }>; approvalRecord: string; permissionExplanation: string };
@@ -21,6 +22,8 @@ function App() {
   const [message, setMessage] = useState('Connecting to Microsoft Teams…');
   const [session, setSession] = useState<Session | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
+  const [setupStep, setSetupStep] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -32,6 +35,9 @@ function App() {
   const [teamsChatsEnabled, setTeamsChatsEnabled] = useState(false);
   const [teamsChannelsEnabled, setTeamsChannelsEnabled] = useState(false);
   const [postgresConfigured, setPostgresConfigured] = useState(false);
+  const [sharedDatabaseCredentials, setSharedDatabaseCredentials] = useState(false);
+  const [postgresAuth, setPostgresAuth] = useState<PostgresAuthAdapter>({ mode: 'postgres_role', schema: '', relation: '', approvalRecord: '' });
+  const [postgresAuthSaved, setPostgresAuthSaved] = useState(false);
   const [postgresEnabled, setPostgresEnabled] = useState(false);
   const [postgresObjectId, setPostgresObjectId] = useState('');
   const [postgresVerifiedEmail, setPostgresVerifiedEmail] = useState('');
@@ -85,6 +91,7 @@ function App() {
   useEffect(() => {
     let disposed = false;
     async function start() {
+      let signedIn = false;
       try {
         await app.initialize();
         const response = await api('/api/session');
@@ -92,6 +99,7 @@ function App() {
         const current = await response.json() as Session;
         if (disposed) return;
         setSession(current);
+        signedIn = true;
         if (current.active) setSetup({ active: true, wizardReady: true });
         setMessage('Signed in securely with your organization account.');
         const credentialResponse = await api('/api/postgres/credentials');
@@ -105,7 +113,12 @@ function App() {
           api('/api/admin/postgres/status'), api('/api/admin/postgres/identities'), api('/api/admin/postgres/queries'),
         ]);
         if (disposed) return;
-        if (setupResponse.ok) setSetup(await setupResponse.json() as SetupStatus);
+        if (!setupResponse.ok || !providerResponse.ok || !sourcesResponse.ok) throw new Error('Workspace settings could not be loaded.');
+        if (setupResponse.ok) {
+          const status = await setupResponse.json() as SetupStatus;
+          setSetup(status);
+          if (!status.active && status.wizardReady) setSetupStep(2);
+        }
         if (providerResponse.ok) {
           const saved = await providerResponse.json() as ProviderStatus;
           setProviderKeyConfigured(saved.apiKeyConfigured ?? false);
@@ -125,12 +138,18 @@ function App() {
           setPostgresEnabled(data.sources.find((source) => source.id === 'user-postgres')?.enabled ?? false);
         }
         if (postgresResponse.ok) setPostgresConfigured((await postgresResponse.json() as { configured: boolean }).configured);
+        const authResponse = await api('/api/admin/postgres/auth');
+        if (authResponse.ok) {
+          const auth = await authResponse.json() as { adapter: PostgresAuthAdapter | null; sharedCredentialsConfigured: boolean };
+          setSharedDatabaseCredentials(auth.sharedCredentialsConfigured);
+          if (auth.adapter) { setPostgresAuth(auth.adapter); setPostgresAuthSaved(true); }
+        }
         if (identityResponse.ok) setPostgresIdentities((await identityResponse.json() as { identities: PostgresIdentity[] }).identities);
         if (queryResponse.ok) setPostgresQueries((await queryResponse.json() as { queries: PostgresQuery[] }).queries);
         const profileTestsResponse = await api('/api/admin/postgres/profile-tests');
         if (profileTestsResponse.ok) setPostgresProfileTests((await profileTestsResponse.json() as { tests: PostgresProfileTest[] }).tests);
       } catch {
-        if (!disposed) setMessage('Open this app inside Microsoft Teams and confirm your organization has configured single sign-on.');
+        if (!disposed) setMessage(signedIn ? 'Your account is connected, but some workspace settings could not load. Reload the app to retry; contact your administrator if this continues.' : 'Open this app inside Microsoft Teams and confirm your organization has configured single sign-on.');
       }
     }
     void start();
@@ -146,26 +165,17 @@ function App() {
         method: 'PUT', body: JSON.stringify({ provider, model, ...(provider === 'openai_compatible' ? { baseUrl } : {}) }),
       });
       if (!response.ok) throw new Error(response.status === 400 ? 'Check the provider, model, and URL.' : 'Provider could not be saved.');
-      setAdminMessage(`Provider settings saved. Set the provider key in operator configuration, then test the connection before ${setup?.active ? 'asking questions' : 'activating setup'}.`);
       setSetup((current) => current ? { ...current, wizardReady: false } : current);
+      setAdminMessage('Settings saved. Checking the provider…');
+      const checkResponse = await api('/api/admin/provider/check', { method: 'POST' });
+      if (!checkResponse.ok) throw new Error('Settings saved, but the provider could not connect. Check the model name, endpoint, and operator-managed API key, then retry.');
+      const statusResponse = await api('/api/setup/status');
+      if (!statusResponse.ok) throw new Error('Provider connected, but setup status could not be refreshed. Retry to continue.');
+      setSetup(await statusResponse.json() as SetupStatus);
+      setSetupStep(1);
+      setAdminMessage('Provider connected. Choose at least one source.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'Provider could not be saved.');
-    } finally {
-      setAdminBusy(false);
-    }
-  }
-
-  async function testProvider() {
-    setAdminBusy(true);
-    setAdminMessage('');
-    try {
-      const response = await api('/api/admin/provider/check', { method: 'POST' });
-      if (!response.ok) throw new Error('The model provider check failed. Verify its settings and the operator-managed provider key.');
-      setAdminMessage('Model provider connected.');
-      const statusResponse = await api('/api/setup/status');
-      if (statusResponse.ok) setSetup(await statusResponse.json() as SetupStatus);
-    } catch (error) {
-      setAdminMessage(error instanceof Error ? error.message : 'The model provider check failed.');
     } finally {
       setAdminBusy(false);
     }
@@ -325,7 +335,7 @@ function App() {
       setPostgresEnabled(enabled);
       const statusResponse = await api('/api/setup/status');
       if (statusResponse.ok) setSetup(await statusResponse.json() as SetupStatus);
-      setAdminMessage(enabled ? 'PostgreSQL search enabled. Map each user to an existing database login and have each user save their own password.' : 'PostgreSQL search disabled.');
+      setAdminMessage(enabled ? sharedDatabaseCredentials ? 'PostgreSQL search enabled. Configure the authorization adapter and check your database access.' : 'PostgreSQL search enabled. Configure the shared connection in Dokploy, or use the legacy user mapping and password flow.' : 'PostgreSQL search disabled.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'The PostgreSQL source setting could not be saved.');
     } finally {
@@ -338,7 +348,7 @@ function App() {
     try {
       const query = afterSchema ? `?afterSchema=${encodeURIComponent(afterSchema)}&afterName=${encodeURIComponent(afterName)}` : '';
       const response = await api(`/api/admin/postgres/discovery${query}`);
-      if (!response.ok) throw new Error('Metadata discovery needs an unambiguous admin login with PostgreSQL SELECT access and saved credentials.');
+      if (!response.ok) throw new Error('Metadata discovery needs a resolved database user with SELECT access. Check the authorization adapter and your database access.');
       const page = await response.json() as PostgresDiscovery;
       setPostgresDiscovery((current) => append && current ? { ...page, relations: [...current.relations, ...page.relations], columns: [...current.columns, ...page.columns], keys: [...(current.keys ?? []), ...(page.keys ?? [])], relationships: [...(current.relationships ?? []), ...(page.relationships ?? [])] } : page);
       setAdminMessage(`Loaded ${page.relations.length} accessible relations and ${page.columns.length} readable columns. No table rows were read.`);
@@ -404,13 +414,44 @@ function App() {
     setAdminMessage('');
     try {
       const response = await api('/api/admin/checks/postgres', { method: 'POST' });
-      if (!response.ok) throw new Error(response.status === 409 ? 'Add a reviewed identity binding, save your own database password, and approve at least one query.' : 'Your database login or an approved query check failed.');
+      if (!response.ok) throw new Error(sharedDatabaseCredentials ? 'Check your authorization adapter, database access, and approved query catalog. Profiles also need tests from two different database users.' : response.status === 409 ? 'Add a reviewed identity binding, save your own database password, and approve at least one query.' : 'Your database login or an approved query check failed.');
       setAdminMessage('The authenticated database identity and approved queries passed.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'PostgreSQL check failed.');
     } finally {
       setAdminBusy(false);
     }
+  }
+
+  async function refreshDatabaseIdentity() {
+    const response = await api('/api/postgres/credentials');
+    if (!response.ok) throw new Error('Database identity status could not be refreshed.');
+    setPostgresCredentialStatus(await response.json() as PostgresCredentialStatus);
+  }
+
+  async function savePostgresAuth(event: React.FormEvent) {
+    event.preventDefault();
+    setAdminBusy(true); setAdminMessage('');
+    try {
+      const response = await api('/api/admin/postgres/auth', { method: 'PUT', body: JSON.stringify(postgresAuth) });
+      if (!response.ok) throw new Error('Check the adapter view, approval reference, and shared username/password in Dokploy POSTGRES_DSN.');
+      setPostgresAuthSaved(true);
+      setPostgresProfileTests([]);
+      setAdminMessage('Adapter saved. Checking your database identity…');
+      const check = await api('/api/admin/postgres/auth/check', { method: 'POST' });
+      await refreshDatabaseIdentity();
+      if (!check.ok) throw new Error('Adapter saved, but your user could not be authorized. Check User.Read consent, the adapter view, your email match, and database role grants.');
+      const result = await check.json() as { userId: string; databaseRole: string };
+      setAdminMessage(`Connected as database user ${result.userId}, role ${result.databaseRole}. Profile tests must be rerun after adapter changes.`);
+    } catch (error) { setAdminMessage(error instanceof Error ? error.message : 'Database adapter could not be checked.'); }
+    finally { setAdminBusy(false); }
+  }
+
+  async function checkDatabaseIdentity() {
+    setAdminBusy(true); setPostgresCredentialMessage('');
+    try { await refreshDatabaseIdentity(); }
+    catch (error) { setPostgresCredentialMessage(error instanceof Error ? error.message : 'Database identity check failed.'); }
+    finally { setAdminBusy(false); }
   }
 
   async function savePostgresIdentity(event: React.FormEvent) {
@@ -421,13 +462,17 @@ function App() {
       const response = await api('/api/admin/postgres/identities', {
         method: 'PUT', body: JSON.stringify({ objectId: postgresObjectId, verifiedEmail: postgresVerifiedEmail, databaseIdentity: postgresDatabaseIdentity }),
       });
-      if (!response.ok) throw new Error(response.status === 409 ? 'That verified email is already bound to another account.' : 'Check the verified email, object ID, and existing database login name.');
+      if (!response.ok) throw new Error(response.status === 409 ? 'This database login is already mapped to another account, or the mapping conflicts with an existing binding. Use a separate database login for each user.' : 'Check the verified email, object ID, and existing database login name.');
       const saved = await response.json() as PostgresIdentity;
       setPostgresIdentities((items) => [...items.filter((item) => item.objectId !== saved.objectId), saved].sort((a, b) => a.objectId.localeCompare(b.objectId)));
       setPostgresObjectId('');
       setPostgresVerifiedEmail('');
       setPostgresDatabaseIdentity('');
       setAdminMessage('Existing database identity binding saved and reviewed. The user must save their own database password again.');
+      const statusResponse = await api('/api/postgres/credentials');
+      if (!statusResponse.ok) throw new Error('Mapping saved, but sign-in status could not refresh. Reload the app before entering your database password.');
+      setPostgresCredentialStatus(await statusResponse.json() as PostgresCredentialStatus);
+      setPostgresProfileTests((items) => items.filter((item) => item.objectId !== saved.objectId));
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'The PostgreSQL identity mapping could not be saved.');
     } finally {
@@ -443,6 +488,10 @@ function App() {
       if (!response.ok) throw new Error('The PostgreSQL identity mapping could not be removed.');
       setPostgresIdentities((items) => items.filter((item) => item.objectId !== objectId));
       setAdminMessage('PostgreSQL identity mapping removed.');
+      const statusResponse = await api('/api/postgres/credentials');
+      if (!statusResponse.ok) throw new Error('Mapping removed, but sign-in status could not refresh. Reload the app.');
+      setPostgresCredentialStatus(await statusResponse.json() as PostgresCredentialStatus);
+      setPostgresProfileTests((items) => items.filter((item) => item.objectId !== objectId));
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'The PostgreSQL identity mapping could not be removed.');
     } finally {
@@ -520,7 +569,7 @@ function App() {
     try {
       const response=await api(`/api/postgres/profiles/${encodeURIComponent(id)}/test`,{method:'POST'});
       const result=await response.json() as {status?:string};
-      if(!response.ok) throw new Error('This profile did not pass for your database login. Contact an administrator to review permissions or schema status.');
+      if(!response.ok) throw new Error('This profile did not pass with your database permissions. Contact an administrator to review permissions or schema status.');
       setPostgresCredentialMessage(`Profile test ${result.status}. Only pass/fail metadata was saved; no sample rows were retained.`);
       if(session?.role==='Admin'){const tests=await api('/api/admin/postgres/profile-tests');if(tests.ok)setPostgresProfileTests((await tests.json() as {tests:PostgresProfileTest[]}).tests);}
     } catch(error){setPostgresCredentialMessage(error instanceof Error?error.message:'Profile test failed.');}
@@ -550,9 +599,15 @@ function App() {
       const response = await api('/api/setup/activate', {
         method: 'POST', headers: { 'X-Setup-Secret': bootstrapSecret },
       });
-      if (!response.ok) throw new Error(response.status === 424 ? 'A connected source or setup check failed.' : 'Setup is not ready or the bootstrap secret is invalid.');
+      if (!response.ok) {
+        const failure = await response.json() as { error?: string; status?: string };
+        if (failure.error === 'source_check_failed') throw new Error(`Source access check failed (${failure.status || 'unavailable'}). Return to Sources to check the enabled connections and Microsoft consent, then retry.`);
+        throw new Error(response.status === 409 ? 'Save and check your provider and enable at least one source before activating.' : 'Activation failed. Check the one-time setup secret and your administrator access, then retry.');
+      }
       setBootstrapSecret('');
       setSetup({ active: true, wizardReady: true });
+      setSetupStep(1);
+      setSettingsOpen(false);
       setAdminMessage('Workspace activated. The bootstrap secret cannot activate it again.');
     } catch (error) {
       setAdminMessage(error instanceof Error ? error.message : 'Workspace activation failed.');
@@ -590,9 +645,18 @@ function App() {
       <div><strong>{session ? 'Account connected' : 'Sign-in required'}</strong><p>{message}</p></div>
     </div>
     {session && <section className="account" aria-label="Signed-in account"><span>Access level</span><strong>{session.role}</strong></section>}
+    {session?.role === 'User' && !setup?.active && <section className="setup-card"><h2>Your workspace is being set up</h2><p>Your administrator needs to connect a provider and source before you can ask questions.</p></section>}
 
-    {session && postgresCredentialStatus?.available && postgresCredentialStatus.mapped && <section className="setup-card">
+    {session && postgresCredentialStatus?.available && <section className="setup-card">
       <h2>Your PostgreSQL sign-in</h2>
+      {postgresCredentialStatus.mode === 'shared-adapter' ? <>
+        <p role="status">{postgresCredentialStatus.status === 'connected' ? `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_required' ? 'Your organization email could not be resolved from Microsoft Graph. Ask your administrator to check User.Read consent and your directory email.' : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
+        <p className="muted">Your Teams account is matched automatically. The connection is supplied by your organization.</p>
+        <button type="button" disabled={adminBusy} onClick={() => void checkDatabaseIdentity()}>Refresh database access</button>
+        {postgresCredentialMessage && <p role="status">{postgresCredentialMessage}</p>}
+        {postgresCredentialStatus.configured && postgresProfiles.length > 0 && <div><h3>Business profile tests</h3><p className="muted">Run tests with your resolved permissions. Each profile requires passing tests from two different database users.</p>{postgresProfiles.map((profile) => <div className="button-row" key={profile.id}><span>{profile.label} v{profile.version}</span><button type="button" disabled={adminBusy} onClick={() => void testPostgresProfile(profile.id)}>Test with my permissions</button></div>)}</div>}
+      </> : <>
+      {!postgresCredentialStatus.verifiedEmail ? <p role="status">Your Teams sign-in did not provide the verified email required by the current database integration. An email entered in the mapping form cannot supply this claim. Ask your administrator to check the identity configuration.</p> : !postgresCredentialStatus.mapped ? <p role="status">Your signed-in email is {postgresCredentialStatus.verifiedEmail}. An administrator must map this exact email and your Entra object ID ({session.objectId}) to your existing PostgreSQL login.</p> : <>
       <p className="muted">Your verified account {postgresCredentialStatus.verifiedEmail} is bound to an existing database login. Enter your own database password; it is encrypted for your account and used only for your searches.</p>
       <form className="admin-form" onSubmit={(event) => void savePostgresPassword(event)}>
         <label>Your database password<input type="password" autoComplete="current-password" value={postgresPassword} onChange={(event) => setPostgresPassword(event.target.value)} maxLength={4096} required /></label>
@@ -600,11 +664,20 @@ function App() {
       </form>
       {postgresCredentialMessage && <p role="status">{postgresCredentialMessage}</p>}
       {postgresCredentialStatus.configured && postgresProfiles.length>0 && <div><h3>Business profile tests</h3><p className="muted">Tests run as your own mapped login and discard returned rows. Administrators require passing evidence from two different users before activating profiles.</p>{postgresProfiles.map((profile)=><div className="button-row" key={profile.id}><span>{profile.label} v{profile.version}</span><button type="button" disabled={adminBusy} onClick={()=>void testPostgresProfile(profile.id)}>Test as my login</button></div>)}</div>}
+      </>}
+      </>}
     </section>}
 
     {session?.role === 'Admin' && <section className="setup-card">
-      <h2>Workspace setup</h2>
-      <p>{setup?.active ? 'Workspace is active.' : setup?.wizardReady ? 'Checks passed. Enter the one-time bootstrap secret to activate.' : 'Configure and check a provider, then choose a source.'}</p>
+      <div className="setup-heading"><h2>{setup?.active ? 'Workspace settings' : 'Set up your workspace'}</h2>{setup?.active && <button type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(!settingsOpen)}>{settingsOpen ? 'Close settings' : 'Manage settings'}</button>}</div>
+      <p>{setup?.active ? 'Workspace is active. You can ask questions below.' : 'Connect a provider, choose one source, and activate. You can add more sources later.'}</p>
+      {(!setup?.active || settingsOpen) && <>
+      <nav className="setup-steps" aria-label="Setup steps">
+        {(setup?.active ? ['AI provider', 'Sources'] : ['AI provider', 'Sources', 'Activate']).map((label, index) => <button type="button" key={label} disabled={adminBusy} aria-current={setupStep === index ? 'step' : undefined} onClick={() => { setSetupStep(index); setAdminMessage(''); }}><span>{index + 1}</span>{label}</button>)}
+      </nav>
+      <div hidden={setupStep !== 0}>
+      <h3>Connect your AI provider</h3>
+      <p className="muted">Use the model approved by your organization.</p>
       <form className="admin-form" onSubmit={(event) => void saveProvider(event)}>
         <label>Model provider<select value={provider} onChange={(event) => setProvider(event.target.value)}>
           <option value="openai">OpenAI</option><option value="openai_compatible">OpenAI-compatible endpoint</option><option value="anthropic">Anthropic</option>
@@ -612,11 +685,17 @@ function App() {
         <label>Model name<input value={model} onChange={(event) => setModel(event.target.value)} maxLength={128} required /></label>
         {provider === 'openai_compatible' && <label>HTTPS base URL<input type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://provider.example/v1" required /></label>}
         <p className="muted">Each answer sends the question and selected source excerpts to this provider. Before activation, review retention, training use, and region for the exact account, endpoint, and model; the synthetic connection check does not verify those settings.</p>
-        <p className="muted">Provider keys come from the operator-managed MODEL_API_KEY setting in local development or the model_api_key mounted secret in Docker. They are never sent from this page or stored in SQLite. {providerKeyConfigured ? 'A key is configured.' : 'No provider key is configured yet.'}</p>
-        <div className="button-row"><button type="submit" disabled={adminBusy}>Save provider</button><button type="button" disabled={adminBusy || !model} onClick={() => void testProvider()}>Test provider</button></div>
+        <p className="muted" role="status">{providerKeyConfigured ? 'API key configured by your operator.' : 'An operator must configure the API key before you can connect.'}</p>
+        <details className="setup-details"><summary>Where does the API key go?</summary><p className="muted">Set MODEL_API_KEY in local development or the model_api_key mounted secret in Docker. Keys are never sent from this page or stored in SQLite.</p></details>
+        <button type="submit" disabled={adminBusy || !providerKeyConfigured}>{adminBusy ? 'Connecting…' : 'Save and connect'}</button>
       </form>
+      </div>
+      <div hidden={setupStep !== 1}>
+      <h3>Choose where to search</h3>
+      <p className="muted">One source is enough to get started. Only enable sources your organization has approved.</p>
       <label className="source-toggle"><input type="checkbox" checked={sourceEnabled} disabled={adminBusy} onChange={(event) => void toggleOneDrive(event.target.checked)} /> Enable search in each user’s own OneDrive</label>
-      <div className="source-setup">
+      <p className="muted">Start with personal documents. Microsoft consent and access are checked during activation.</p>
+      <details className="source-setup"><summary>SharePoint documents {sharePointEnabled ? '· Enabled' : '· Optional'}</summary>
         <label>SharePoint site URLs<textarea value={sharePointSiteUrls} onChange={(event) => setSharePointSiteUrls(event.target.value)} rows={3} placeholder="https://contoso.sharepoint.com/sites/Research" disabled={adminBusy} /></label>
         <p className="muted">One site per line, up to five. Searches each site’s default document library. Delegated Sites.Read.All consent is required; each user’s access is checked when searching and downloading.</p>
         <div className="button-row">
@@ -624,28 +703,39 @@ function App() {
           <button type="button" disabled={adminBusy || !sharePointEnabled} onClick={() => void checkSharePoint()}>Check SharePoint</button>
           <button type="button" disabled={adminBusy || !sharePointEnabled} onClick={() => void saveSharePoint(false)}>Disable</button>
         </div>
-      </div>
-      <div className="source-setup">
+      </details>
+      <details className="source-setup"><summary>Teams chats {teamsChatsEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={teamsChatsEnabled} disabled={adminBusy} onChange={(event) => void toggleTeamsChats(event.target.checked)} /> Enable search in each user’s Teams chats</label>
         <p className="muted">Searches recent messages in the user’s private and group chats (up to ten chats and twenty messages per chat). Delegated Chat.Read consent is required. Channel messages are not included.</p>
         <button type="button" disabled={adminBusy || !teamsChatsEnabled} onClick={() => void checkTeamsChats()}>Check Teams chats</button>
-      </div>
-      <div className="source-setup">
+      </details>
+      <details className="source-setup"><summary>Teams channels {teamsChannelsEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={teamsChannelsEnabled} disabled={adminBusy} onChange={(event) => void toggleTeamsChannels(event.target.checked)} /> Enable search in each user’s joined Teams channels</label>
         <p className="muted">Searches up to five joined teams, five channels per team, and twenty recent root messages per channel. Delegated Team.ReadBasic.All, Channel.ReadBasic.All, and ChannelMessage.Read.All consent is required. Users’ channel membership is checked by Graph.</p>
         <button type="button" disabled={adminBusy || !teamsChannelsEnabled} onClick={() => void checkTeamsChannels()}>Check Teams channels</button>
-      </div>
-      <div className="source-setup">
+      </details>
+      <details className="source-setup"><summary>Outlook email {outlookEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={outlookEnabled} disabled={adminBusy} onChange={(event) => void toggleOutlook(event.target.checked)} /> Enable search in each user’s own Outlook mailbox</label>
         <p className="muted">Searches a few matching message subjects and text bodies. Delegated Mail.Read consent is required; messages are read as the signed-in user. Attachments and shared mailboxes are not searched.</p>
         <button type="button" disabled={adminBusy || !outlookEnabled} onClick={() => void checkOutlook()}>Check Outlook</button>
-      </div>
-      {postgresConfigured && <div className="source-setup">
+      </details>
+      {postgresConfigured && <details className="source-setup"><summary>PostgreSQL · Advanced {postgresEnabled ? '· Enabled' : '· Optional'}</summary>
+        <h3>Database authorization</h3>
+        <p className="muted">Connect using Dokploy credentials, match each Teams email to a database user, and apply that user's permissions. An administrator configures the adapter once.</p>
+        <p className="muted">{sharedDatabaseCredentials ? 'Shared database credentials are configured.' : 'Add the service username and password to POSTGRES_DSN in Dokploy and redeploy to use automatic matching. The legacy per-user login flow remains available below.'}</p>
+        <form className="admin-form" onSubmit={(event) => void savePostgresAuth(event)}>
+          <label>Permission system<select value={postgresAuth.mode} onChange={(event) => { setPostgresAuth({ ...postgresAuth, mode: event.target.value }); setPostgresAuthSaved(false); }}><option value="postgres_role">PostgreSQL roles and row policies</option><option value="session_context">Application auth with database row policies</option></select></label>
+          <label>Authorization view schema<input value={postgresAuth.schema} onChange={(event) => { setPostgresAuth({ ...postgresAuth, schema: event.target.value }); setPostgresAuthSaved(false); }} maxLength={63} required placeholder="iqkb_auth" /></label>
+          <label>Authorization view name<input value={postgresAuth.relation} onChange={(event) => { setPostgresAuth({ ...postgresAuth, relation: event.target.value }); setPostgresAuthSaved(false); }} maxLength={63} required placeholder="users" /></label>
+          <details className="setup-details"><summary>Adapter view requirements</summary><p className="muted">The DBA-defined view translates your auth system into these columns: tenant_id, email, user_id, database_role, active (boolean), and permission_version. It must return exactly one user per tenant and email. The service login needs SELECT on this view and permission to switch to the returned restricted role. Application auth policies can read the transaction's iqkb user context and request.jwt.claims. Each permission change must update permission_version. Policies must enforce access in PostgreSQL; an application role label alone cannot restrict records.</p></details>
+          <label>Permission review reference<input value={postgresAuth.approvalRecord} onChange={(event) => { setPostgresAuth({ ...postgresAuth, approvalRecord: event.target.value }); setPostgresAuthSaved(false); }} required maxLength={200} placeholder="DBA approval ticket" /></label>
+          <button type="submit" disabled={adminBusy || !sharedDatabaseCredentials}>{adminBusy ? 'Checking…' : postgresAuthSaved ? 'Save and recheck my access' : 'Save and check my access'}</button>
+        </form>
         <label className="source-toggle"><input type="checkbox" checked={postgresEnabled} disabled={adminBusy} onChange={(event) => void togglePostgres(event.target.checked)} /> Enable PostgreSQL search</label>
-        <p className="muted">Searches your organization's existing data using versioned DBA-approved SELECT queries. Each search uses your own database login and password over verified TLS; existing grants and row-level security remain authoritative. PostgreSQL OAuth is unsupported.</p>
-        <button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void checkPostgres()}>Check my login and approved queries</button>
+        <p className="muted">Searches your organization's data using reviewed queries over verified TLS. Each query applies your resolved database role and authorization context. PostgreSQL OAuth is unsupported.</p>
+        <button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void checkPostgres()}>Check my access and approved queries</button>
         <div className="button-row"><button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void discoverPostgres()}>Discover accessible schema</button></div>
-        <p className="muted">Discovery lists only metadata visible to your own database login. It never reads sample rows. Only invoker-secure views with safe dependencies can be mapped; each profile access checks that the selected view key is non-null and unique, which may scan the view and time out on large views. Comments are untrusted database metadata; review them before using any description in a mapping.</p>
+        <p className="muted">Discovery lists only metadata visible to your resolved database role. It never reads sample rows. Only invoker-secure views with safe dependencies can be mapped; each profile access checks that the selected view key is non-null and unique, which may scan the view and time out on large views. Comments are untrusted database metadata; review them before using any description in a mapping.</p>
         {postgresDiscovery && <div className="query-entry"><h3>Accessible relations</h3>{postgresDiscovery.relations.map((relation) => { const keys = (postgresDiscovery.keys ?? []).filter((key) => key.schema === relation.schema && key.relation === relation.name); const relationships = (postgresDiscovery.relationships ?? []).filter((item) => item.sourceSchema === relation.schema && item.sourceRelation === relation.name); return <article key={`${relation.schema}.${relation.name}`}><strong>{relation.schema}.{relation.name}</strong> <span className="muted">{relation.kind}</span>{relation.reason && <p className="muted">{relation.reason}</p>}{relation.comment && <p>{relation.comment}</p>}{keys.length > 0 && <p>Keys: {keys.map((key) => `${key.kind} (${key.columns.join(', ')})`).join('; ')}</p>}{relationships.map((item) => <p key={item.name}>Relationship: {item.sourceColumns.join(', ')} → {item.targetSchema}.{item.targetRelation} ({item.targetColumns.join(', ')})</p>)}<ul>{postgresDiscovery.columns.filter((column) => column.schema === relation.schema && column.relation === relation.name).map((column) => <li key={column.name}><code>{column.name}</code> · {column.dataType}{column.nullable ? ' · nullable' : ''}{column.comment ? ` · ${column.comment}` : ''}</li>)}</ul></article>;})}{postgresDiscovery.nextSchema && <button type="button" disabled={adminBusy} onClick={() => void discoverPostgres(postgresDiscovery.nextSchema!, postgresDiscovery.nextName!, true)}>Load next metadata page</button>}
 	          <h3>Map a business capability</h3><p className="muted">Choose metadata and business meanings you reviewed. No entities, aliases, relationships, or filter values are inferred.</p>
           <form className="admin-form" onSubmit={(event) => void saveBusinessProfile(event)}>
@@ -673,13 +763,14 @@ function App() {
             <button type="submit" disabled={adminBusy || !profilePreview || profilePreviewInput !== profileFormSignature()}>Save versioned profile</button>
           </form>
         </div>}
-        <form className="admin-form" onSubmit={(event) => void savePostgresIdentity(event)}>
+        {!sharedDatabaseCredentials && <><h3>Legacy per-user database logins</h3><form className="admin-form" onSubmit={(event) => void savePostgresIdentity(event)}>
           <label>User Entra object ID<input value={postgresObjectId} onChange={(event) => setPostgresObjectId(event.target.value)} maxLength={36} required placeholder="GUID" /></label>
           <label>User verified organizational email<input type="email" value={postgresVerifiedEmail} onChange={(event) => setPostgresVerifiedEmail(event.target.value)} maxLength={254} required /></label>
           <label>Existing database login name<input value={postgresDatabaseIdentity} onChange={(event) => setPostgresDatabaseIdentity(event.target.value)} maxLength={63} required /></label>
           <button type="submit" disabled={adminBusy}>Review and save identity binding</button>
         </form>
         {postgresIdentities.length > 0 && <ul>{postgresIdentities.map((item) => <li key={item.objectId}>{item.verifiedEmail} → {item.databaseIdentity} <button type="button" disabled={adminBusy} onClick={() => void deletePostgresIdentity(item.objectId)}>Remove</button></li>)}</ul>}
+        </>}
         <h3>Approved query catalog</h3>
         <p className="muted">The model sees only query IDs, descriptions, and parameter types. It cannot see or generate SQL. The application binds the user's question as <code>question:text</code> and validates <code>limit:integer[1,5]</code>. Every query must return <code>id</code>, <code>title</code>, <code>content</code>, and <code>source_url</code> as text.</p>
         {postgresQueries.map((query) => <article className="query-entry" key={query.id}>
@@ -694,13 +785,22 @@ function App() {
           <label>DBA approval record<input value={postgresToolApproval} onChange={(event) => setPostgresToolApproval(event.target.value)} maxLength={180} required placeholder="Change ticket or approval record" /></label>
           <button type="submit" disabled={adminBusy}>Save approved query version</button>
         </form>
+      </details>}
+      {!setup?.active && <><button type="button" disabled={adminBusy || !setup?.wizardReady} onClick={() => { setSetupStep(2); setAdminMessage(''); }}>Continue to activation</button>{!setup?.wizardReady && <p className="muted">Connect your provider and enable at least one source to continue.</p>}</>}
+      </div>
+      {!setup?.active && <div hidden={setupStep !== 2}>
+        <h3>Ready to start asking questions</h3>
+        <p className="muted">Enabled sources: {[sourceEnabled && 'OneDrive', sharePointEnabled && 'SharePoint', teamsChatsEnabled && 'Teams chats', teamsChannelsEnabled && 'Teams channels', outlookEnabled && 'Outlook', postgresEnabled && 'PostgreSQL'].filter(Boolean).join(', ') || 'None yet'}. Activation checks access to every enabled source.</p>
+        {!setup?.wizardReady && <p role="status">Complete the provider connection and source selection first.</p>}
+        <form className="admin-form" onSubmit={(event) => void activateSetup(event)}>
+          <label>One-time setup secret<input id="bootstrap-secret" type="password" autoComplete="new-password" value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} required /></label>
+          <p className="muted">Use the bootstrap secret supplied by your deployment operator. This activates the workspace for your organization.</p>
+          <button type="submit" disabled={adminBusy || !setup?.wizardReady}>{adminBusy ? 'Checking source access…' : 'Activate workspace'}</button>
+        </form>
       </div>}
-      {!setup?.active && <form className="admin-form" onSubmit={(event) => void activateSetup(event)}>
-        <label>One-time bootstrap secret<input id="bootstrap-secret" type="password" autoComplete="new-password" value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} required /></label>
-        <button type="submit" disabled={adminBusy || !setup?.wizardReady}>Activate workspace</button>
-      </form>}
       {adminMessage && <p role="status">{adminMessage}</p>}
       <p className="muted">Answers are private to the signed-in user. Source text and questions are processed for each request and are not saved by IQ Knowledge.</p>
+      </>}
     </section>}
 
     {setup?.active && <section className="ask-card">

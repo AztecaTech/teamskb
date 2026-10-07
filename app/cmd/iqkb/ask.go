@@ -414,8 +414,7 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 	if active[5] && pg == nil {
 		failures++
 	} else if active[5] && selection != nil && limits[5] > 0 {
-		databaseIdentity, err := mappedDatabaseIdentity(ctx, db, principal)
-		password, passwordErr := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
+		pg, databaseIdentity, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 		tools, catalogErr := postgres.Catalog(db)
 		var tool postgres.QueryTool
 		toolFound := false
@@ -427,12 +426,12 @@ func retrieveEnabledSources(ctx context.Context, db *sql.DB, encryptionKey []byt
 				}
 			}
 		}
-		if err != nil || passwordErr != nil || catalogErr != nil || !toolFound {
+		if err != nil || catalogErr != nil || !toolFound {
 			failures++
 		} else {
 			limit := min(selection.Limit, limits[5])
 			if len(tool.ProfileConfig) > 0 && string(tool.ProfileConfig) != "{}" {
-				if !postgresProfilesActivationReady(db, principal.TenantID, tools) {
+				if !postgresProfilesReady(ctx, db, pg, principal.TenantID, tools) {
 					failures++
 				} else {
 					var profile postgres.BusinessProfile

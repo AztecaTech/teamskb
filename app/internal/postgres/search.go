@@ -42,7 +42,11 @@ type QueryTool struct {
 	ProfileConfig  json.RawMessage  `json:"profileConfig,omitempty"`
 }
 
-type Connector struct{ template *pgx.ConnConfig }
+type Connector struct {
+	template, service *pgx.ConnConfig
+	adapter           *AdapterConfig
+	subject           *Subject
+}
 
 func Open(_ context.Context, connectionString string) (*Connector, error) {
 	if strings.TrimSpace(connectionString) == "" || len(connectionString) > 4096 || strings.ContainsAny(connectionString, "\r\n\x00") {
@@ -55,8 +59,9 @@ func Open(_ context.Context, connectionString string) (*Connector, error) {
 	if config.TLSConfig == nil || config.TLSConfig.InsecureSkipVerify || config.TLSConfig.ServerName == "" {
 		return nil, errors.New("PostgreSQL requires TLS with certificate and hostname verification (sslmode=verify-full)")
 	}
+	service := config.Copy()
 	config.User, config.Password = "", ""
-	return &Connector{template: config}, nil
+	return &Connector{template: config, service: service}, nil
 }
 
 func (c *Connector) Close() {}
@@ -65,15 +70,8 @@ func (c *Connector) CheckIdentity(ctx context.Context, databaseIdentity, passwor
 	if !ValidDatabaseIdentity(databaseIdentity) || password == "" {
 		return errors.New("PostgreSQL credentials are invalid")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
-	if err != nil {
-		return errors.New("PostgreSQL identity check failed")
-	}
-	defer closeConnection(conn)
-	if err := checkExecutionIdentity(ctx, conn, databaseIdentity); err != nil {
-		return errors.New("PostgreSQL identity check failed")
-	}
-	return nil
+	_, err := c.ResolveIdentity(ctx, databaseIdentity, password)
+	return err
 }
 
 func (c *Connector) Search(ctx context.Context, databaseIdentity, password, question string, limit int, tool QueryTool) ([]graph.Document, error) {
@@ -83,22 +81,12 @@ func (c *Connector) Search(ctx context.Context, databaseIdentity, password, ques
 	if err := ValidateQueryTool(tool); err != nil {
 		return nil, errors.New("PostgreSQL query catalog entry is invalid")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
+	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return nil, errors.New("PostgreSQL search failed")
 	}
 	defer closeConnection(conn)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, errors.New("PostgreSQL search failed")
-	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := setLimits(ctx, tx); err != nil {
-		return nil, errors.New("PostgreSQL search failed")
-	}
-	if err := checkExecutionIdentity(ctx, tx, databaseIdentity); err != nil {
-		return nil, err
-	}
 	if _, err := tx.Exec(ctx, `SET LOCAL DateStyle = 'ISO, YMD'`); err != nil {
 		return nil, errors.New("PostgreSQL profile search failed")
 	}
@@ -154,22 +142,12 @@ func (c *Connector) SearchProfile(ctx context.Context, databaseIdentity, passwor
 	if err != nil {
 		return nil, errors.New("PostgreSQL profile is invalid")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
+	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return nil, errors.New("PostgreSQL profile search failed")
 	}
 	defer closeConnection(conn)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, errors.New("PostgreSQL profile search failed")
-	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := setLimits(ctx, tx); err != nil {
-		return nil, errors.New("PostgreSQL profile search failed")
-	}
-	if err := checkExecutionIdentity(ctx, tx, databaseIdentity); err != nil {
-		return nil, err
-	}
 	actualFingerprint, err := validateProfileSchema(ctx, tx, profile)
 	if err != nil || profile.SchemaFingerprint == "" || actualFingerprint != profile.SchemaFingerprint {
 		return nil, errors.New("PostgreSQL profile is stale, unsupported, or not readable by this login")
@@ -269,22 +247,12 @@ func (c *Connector) SearchRelatedProfile(ctx context.Context, databaseIdentity, 
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile is invalid")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
+	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile search failed")
 	}
 	defer closeConnection(conn)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, errors.New("PostgreSQL profile search failed")
-	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := setLimits(ctx, tx); err != nil {
-		return nil, nil, errors.New("PostgreSQL profile search failed")
-	}
-	if err := checkExecutionIdentity(ctx, tx, databaseIdentity); err != nil {
-		return nil, nil, err
-	}
 	fingerprint, err := validateProfileSchema(ctx, tx, profile)
 	if err != nil || profile.SchemaFingerprint == "" || fingerprint != profile.SchemaFingerprint {
 		return nil, nil, errors.New("PostgreSQL profile is stale, unsupported, or not readable by this login")
@@ -378,22 +346,12 @@ func (c *Connector) ValidateRelatedProfile(ctx context.Context, databaseIdentity
 	if err != nil {
 		return errors.New("PostgreSQL profile is invalid")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
+	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return errors.New("PostgreSQL profile test failed")
 	}
 	defer closeConnection(conn)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return errors.New("PostgreSQL profile test failed")
-	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := setLimits(ctx, tx); err != nil {
-		return errors.New("PostgreSQL profile test failed")
-	}
-	if err := checkExecutionIdentity(ctx, tx, databaseIdentity); err != nil {
-		return err
-	}
 	fingerprint, err := validateProfileSchema(ctx, tx, profile)
 	if err != nil || fingerprint != profile.SchemaFingerprint {
 		return errors.New("PostgreSQL profile is stale or inaccessible")
@@ -521,6 +479,9 @@ func (c *Connector) connect(ctx context.Context, databaseIdentity, password stri
 	defer cancel()
 	config := c.template.Copy()
 	config.User, config.Password = databaseIdentity, password
+	if c.adapter != nil {
+		config = c.service.Copy()
+	}
 	return pgx.ConnectConfig(connectCtx, config)
 }
 

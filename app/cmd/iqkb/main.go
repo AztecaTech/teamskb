@@ -154,10 +154,11 @@ func run(cfg config) error {
 	if err := store.SeedAdmin(db, cfg.tenantID, cfg.adminObjectID); err != nil {
 		return err
 	}
-	verifier, err := identity.NewVerifier(cfg.tenantID, cfg.appClientID, cfg.appClientID)
+	baseVerifier, err := identity.NewVerifier(cfg.tenantID, cfg.appClientID, cfg.appClientID)
 	if err != nil {
 		return err
 	}
+	var verifier tokenVerifier = directoryTokenVerifier{base: baseVerifier, db: db, socket: cfg.oboSocket}
 	if err := os.MkdirAll(filepath.Dir(cfg.bridgeSocket), 0700); err != nil {
 		return err
 	}
@@ -212,6 +213,8 @@ func run(cfg config) error {
 	publicMux.Handle("/api/admin/sources", sourceRoutes)
 	publicMux.Handle("/api/admin/sources/", sourceRoutes)
 	postgresRoutes := authenticate(verifier, db, true, postgresHandler(db, encryptionKey, pg))
+	publicMux.Handle("/api/admin/postgres/auth", authenticate(verifier, db, true, postgresAuthHandler(db, encryptionKey, pg)))
+	publicMux.Handle("/api/admin/postgres/auth/", authenticate(verifier, db, true, postgresAuthHandler(db, encryptionKey, pg)))
 	publicMux.Handle("/api/admin/postgres/", postgresRoutes)
 	publicMux.Handle("/api/admin/postgres/profile-tests", postgresRoutes)
 	publicMux.Handle("/api/postgres/profiles", authenticate(verifier, db, false, postgresProfilesHandler(db, encryptionKey, pg)))
@@ -751,11 +754,7 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 		if principal.VerifiedEmail == "" {
 			return "postgres_verified_email_required", errors.New("verified organizational email is required")
 		}
-		databaseIdentity, err := mappedDatabaseIdentity(ctx, db, principal)
-		if err != nil {
-			return "identity_not_mapped", errors.New("administrator has no PostgreSQL identity mapping")
-		}
-		password, err := loadPostgresPassword(db, encryptionKey, principal.TenantID, principal.ObjectID)
+		pg, databaseIdentity, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 		if err != nil {
 			return "postgres_credentials_required", err
 		}
@@ -766,7 +765,7 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 		if err != nil || len(tools) == 0 {
 			return "approved_query_required", errors.New("an approved PostgreSQL query is required")
 		}
-		if !postgresProfilesActivationReady(db, principal.TenantID, tools) {
+		if !postgresProfilesReady(ctx, db, pg, principal.TenantID, tools) {
 			return "second_user_test_required", errors.New("each PostgreSQL profile requires tests from two distinct mapped users")
 		}
 		for _, tool := range tools {

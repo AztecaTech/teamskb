@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -67,27 +65,17 @@ func (c *Connector) Discover(ctx context.Context, databaseIdentity, password, sc
 	if !ValidDatabaseIdentity(databaseIdentity) || password == "" || len(schemaAfter) > 63 || len(nameAfter) > 63 {
 		return page, errors.New("invalid PostgreSQL discovery request")
 	}
-	conn, err := c.connect(ctx, databaseIdentity, password)
+	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return page, errors.New("PostgreSQL discovery failed")
 	}
 	defer closeConnection(conn)
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return page, errors.New("PostgreSQL discovery failed")
-	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := setLimits(ctx, tx); err != nil {
-		return page, errors.New("PostgreSQL discovery failed")
-	}
-	if err := checkExecutionIdentity(ctx, tx, databaseIdentity); err != nil {
-		return page, err
-	}
-	rows, err := tx.Query(ctx, `SELECT c.oid::text,t.table_schema,t.table_name,t.table_type,c.relkind::text,COALESCE(obj_description(c.oid,'pg_class'),''),c.relrowsecurity,c.relforcerowsecurity,pg_get_userbyid(c.relowner)=session_user
+	rows, err := tx.Query(ctx, `SELECT c.oid::text,t.table_schema,t.table_name,t.table_type,c.relkind::text,COALESCE(obj_description(c.oid,'pg_class'),''),c.relrowsecurity,c.relforcerowsecurity,pg_get_userbyid(c.relowner)=current_user
 FROM information_schema.tables t JOIN pg_namespace n ON n.nspname=t.table_schema JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=t.table_name
 WHERE t.table_type IN ('BASE TABLE','VIEW') AND t.table_schema NOT IN ('information_schema','pg_catalog')
 AND (t.table_schema,t.table_name) > ($1,$2)
-AND (has_table_privilege(session_user,quote_ident(t.table_schema)||'.'||quote_ident(t.table_name),'SELECT') OR has_any_column_privilege(session_user,quote_ident(t.table_schema)||'.'||quote_ident(t.table_name),'SELECT'))
+AND (has_table_privilege(current_user,quote_ident(t.table_schema)||'.'||quote_ident(t.table_name),'SELECT') OR has_any_column_privilege(current_user,quote_ident(t.table_schema)||'.'||quote_ident(t.table_name),'SELECT'))
 ORDER BY t.table_schema,t.table_name LIMIT $3`, schemaAfter, nameAfter, maxDiscoveryRelations+1)
 	if err != nil {
 		return page, errors.New("PostgreSQL discovery failed")
@@ -143,8 +131,8 @@ FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n
 JOIN unnest(con.conkey) WITH ORDINALITY AS k(attnum,ordinality) ON true JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum=k.attnum
 WHERE con.contype IN ('p','u') AND ns.nspname NOT IN ('information_schema','pg_catalog')
 AND (ns.nspname,c.relname)>=($1,$2) AND (ns.nspname,c.relname)<=($3,$4)
-AND (has_table_privilege(session_user,c.oid,'SELECT') OR has_any_column_privilege(session_user,c.oid,'SELECT'))
-GROUP BY ns.nspname,c.relname,con.oid,con.contype HAVING bool_and(has_column_privilege(session_user,c.oid,a.attnum,'SELECT'))
+AND (has_table_privilege(current_user,c.oid,'SELECT') OR has_any_column_privilege(current_user,c.oid,'SELECT'))
+GROUP BY ns.nspname,c.relname,con.oid,con.contype HAVING bool_and(has_column_privilege(current_user,c.oid,a.attnum,'SELECT'))
 ORDER BY ns.nspname,c.relname,con.oid LIMIT $5`, first.Schema, first.Name, last.Schema, last.Name, maxDiscoveryKeys+1)
 	if err != nil {
 		return page, errors.New("PostgreSQL key discovery failed")
@@ -180,9 +168,9 @@ JOIN pg_attribute sa ON sa.attrelid=src.oid AND sa.attnum=sk.attnum
 JOIN pg_attribute da ON da.attrelid=dst.oid AND da.attnum=tk.attnum
 WHERE con.contype='f' AND sn.nspname NOT IN ('information_schema','pg_catalog') AND tn.nspname NOT IN ('information_schema','pg_catalog')
 AND (sn.nspname,src.relname)>=($1,$2) AND (sn.nspname,src.relname)<=($3,$4)
-AND (has_table_privilege(session_user,src.oid,'SELECT') OR has_any_column_privilege(session_user,src.oid,'SELECT'))
-AND (has_table_privilege(session_user,dst.oid,'SELECT') OR has_any_column_privilege(session_user,dst.oid,'SELECT'))
-AND has_column_privilege(session_user,src.oid,sa.attnum,'SELECT') AND has_column_privilege(session_user,dst.oid,da.attnum,'SELECT')
+AND (has_table_privilege(current_user,src.oid,'SELECT') OR has_any_column_privilege(current_user,src.oid,'SELECT'))
+AND (has_table_privilege(current_user,dst.oid,'SELECT') OR has_any_column_privilege(current_user,dst.oid,'SELECT'))
+AND has_column_privilege(current_user,src.oid,sa.attnum,'SELECT') AND has_column_privilege(current_user,dst.oid,da.attnum,'SELECT')
 GROUP BY con.oid,con.conname,sn.nspname,src.relname,tn.nspname,dst.relname ORDER BY sn.nspname,src.relname,con.conname LIMIT $5`, first.Schema, first.Name, last.Schema, last.Name, maxDiscoveryForeignKeys+1)
 	if err != nil {
 		return page, errors.New("PostgreSQL relationship discovery failed")
@@ -208,7 +196,7 @@ GROUP BY con.oid,con.conname,sn.nspname,src.relname,tn.nspname,dst.relname ORDER
 FROM information_schema.columns c
 WHERE (c.table_schema,c.table_name) >= ($1,$2) AND (c.table_schema,c.table_name) <= ($3,$4)
 AND c.table_schema NOT IN ('information_schema','pg_catalog')
-AND has_column_privilege(session_user,quote_ident(c.table_schema)||'.'||quote_ident(c.table_name),c.column_name,'SELECT')
+AND has_column_privilege(current_user,quote_ident(c.table_schema)||'.'||quote_ident(c.table_name),c.column_name,'SELECT')
 ORDER BY c.table_schema,c.table_name,c.ordinal_position LIMIT $5`, first.Schema, first.Name, last.Schema, last.Name, maxDiscoveryColumns+1)
 	if err != nil {
 		return page, errors.New("PostgreSQL discovery failed")

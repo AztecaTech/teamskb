@@ -32,6 +32,13 @@ test('exchanges only the fixed delegated Graph scope for each named profile', as
   assert.equal(exchange.oboAssertion, 'a'.repeat(100));
   assert.deepEqual(exchange.scopes, ['https://graph.microsoft.com/Files.Read']);
 
+  const identity = await handleOboPayload({ acquireTokenOnBehalfOf: async (request) => {
+    exchange = request;
+    return { accessToken: 'graph-token' };
+  } }, { assertion: 'a'.repeat(100), profile: 'identity' });
+  assert.equal(identity.status, 200);
+  assert.deepEqual(exchange.scopes, ['https://graph.microsoft.com/User.Read']);
+
   const sharepoint = await handleOboPayload({ acquireTokenOnBehalfOf: async (request) => {
     exchange = request;
     return { accessToken: 'graph-token' };

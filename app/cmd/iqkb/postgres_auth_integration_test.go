@@ -1,0 +1,138 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"iq-kbteams/internal/identity"
+	"iq-kbteams/internal/postgres"
+)
+
+func TestPostgresAdapterWorkflowIntegration(t *testing.T) {
+	file := os.Getenv("IQKB_AUTH_TEST_DSN_FILE")
+	if file == "" {
+		t.Skip("run scripts/validate-postgres-auth.ps1")
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal("fixture DSN missing")
+	}
+	dsn := strings.TrimSpace(string(raw))
+	pg, err := postgres.Open(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{0x55}, 32)
+	db := readyWorkflowDB(t, key)
+	alex := identity.Principal{TenantID: "tenant-one", ObjectID: "22345678-1234-4234-9234-123456789abc", VerifiedEmail: "app-alex@example.com"}
+	blair := identity.Principal{TenantID: alex.TenantID, ObjectID: "32345678-1234-4234-9234-123456789abc", VerifiedEmail: "app-blair@example.com"}
+	if _, err = db.Exec(`INSERT INTO admin_assignments(tenant_id,object_id,created_at) VALUES(?,?,'now')`, alex.TenantID, alex.ObjectID); err != nil {
+		t.Fatal(err)
+	}
+	request := func(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer synthetic-user-assertion")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	authHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresAuthHandler(db, key, pg))
+	body := `{"mode":"session_context","schema":"iqkb_auth","relation":"users","approvalRecord":"fixture-review"}`
+	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", body); rec.Code != 200 {
+		t.Fatalf("save adapter=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := request(authHandler, "POST", "/api/admin/postgres/auth/check", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), "iqkb_application") {
+		t.Fatalf("check=%d %s", rec.Code, rec.Body.String())
+	}
+	denied := authenticate(fixedTokenVerifier{blair}, db, true, postgresAuthHandler(db, key, pg))
+	if rec := request(denied, "PUT", "/api/admin/postgres/auth", body); rec.Code != 403 {
+		t.Fatal("non-admin adapter edit allowed")
+	}
+	creds := authenticate(fixedTokenVerifier{alex}, db, false, postgresCredentialHandler(db, key, pg))
+	if rec := request(creds, "GET", "/api/postgres/credentials", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mode":"shared-adapter"`) || !strings.Contains(rec.Body.String(), `"mapped":true`) {
+		t.Fatalf("credentials status=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := request(creds, "PUT", "/api/postgres/credentials", `{"password":"must-not-be-used"}`); rec.Code != 409 {
+		t.Fatal("shared mode accepted user password")
+	}
+	profile := postgres.BusinessProfile{ID: "policies", Label: "Policies", Capability: "entity_lookup", Schema: "iqkb_data", Relation: "documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []postgres.ProfileColumn{{Name: "content", Type: "text"}}, Approval: "fixture-review"}
+	tool, err := prepareBusinessProfile(t.Context(), db, key, pg, alex, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, _ := json.Marshal(tool.Parameters)
+	outputs, _ := json.Marshal(tool.OutputColumns)
+	if _, err = db.Exec(`INSERT INTO query_tools(tool_id,version,description,fixed_sql,parameter_schema,output_columns,approval_record,profile_config) VALUES(?,?,?,?,?,?,?,?)`, tool.ID, tool.Version, tool.Description, tool.SQL, params, outputs, tool.ApprovalRecord, tool.ProfileConfig); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := postgres.Catalog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, principal := range []identity.Principal{alex, blair} {
+		handler := authenticate(fixedTokenVerifier{principal}, db, false, postgresProfileTestHandler(db, key, pg))
+		if rec := request(handler, "POST", "/api/postgres/profiles/policies/test", ""); rec.Code != 200 {
+			t.Fatalf("profile test=%d %s", rec.Code, rec.Body.String())
+		}
+		if ready := postgresProfilesReady(t.Context(), db, pg, alex.TenantID, tools); ready != (index == 1) {
+			t.Fatalf("two-user evidence ready=%v at index %d", ready, index)
+		}
+	}
+	if _, err = db.Exec(`UPDATE source_boundaries SET enabled=0`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if state, err := checkEnabledSourceAccess(t.Context(), db, key, "assertion", "unused", pg, alex); err != nil || state != "connected" {
+		t.Fatalf("activation state=%s err=%v", state, err)
+	}
+	for _, principal := range []identity.Principal{alex, blair} {
+		approved, err := approvedPostgresToolsForUser(t.Context(), db, key, pg, principal)
+		if err != nil || len(approved) != 1 {
+			t.Fatalf("catalog=%#v err=%v", approved, err)
+		}
+		selection := &postgres.ToolSelection{ToolID: "policies", Term: "Policy", Limit: 5}
+		sources, failures, err := retrieveEnabledSources(t.Context(), db, key, pg, principal, "unused", "assertion", "Policy", selection)
+		wanted := "alex-doc"
+		if principal.ObjectID == blair.ObjectID {
+			wanted = "blair-doc"
+		}
+		if err != nil || failures != 0 || len(sources.records) != 1 || sources.records[0].ID != wanted {
+			t.Fatalf("retrieval failed=%d err=%v records=%#v", failures, err, sources.records)
+		}
+	}
+	adminConfig, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminConfig.User, adminConfig.Password = "postgres", "IQKB-test-admin-only"
+	admin, err := pgx.ConnectConfig(t.Context(), adminConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	if _, err = admin.Exec(t.Context(), `UPDATE iqkb_auth.users SET permission_version='v2' WHERE email='app-blair@example.com'`); err != nil {
+		t.Fatal(err)
+	}
+	if postgresProfilesReady(t.Context(), db, pg, alex.TenantID, tools) {
+		t.Fatal("changed permissions reused old profile evidence")
+	}
+	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", body); rec.Code != 200 {
+		t.Fatal("adapter resave failed")
+	}
+	var count int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM postgres_adapter_profile_tests`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("adapter change retained evidence")
+	}
+	if err = db.QueryRow(`SELECT COUNT(*) FROM encrypted_secrets WHERE secret_id LIKE 'postgres_password:%'`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("shared workflow stored per-user passwords")
+	}
+}
