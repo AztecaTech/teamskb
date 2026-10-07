@@ -100,6 +100,55 @@ func postgresAccessFailureCode(err error, fallback string) string {
 
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/postgres/auth/permission-drafts", func(w http.ResponseWriter, r *http.Request) {
+		var raw string
+		err := db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key='postgres_permission_drafts'`).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, 200, []postgres.PermissionDraft{})
+			return
+		}
+		if err != nil {
+			jsonResponse(w, 503, `{"error":"permission_drafts_unavailable"}`)
+			return
+		}
+		var drafts []postgres.PermissionDraft
+		if json.Unmarshal([]byte(raw), &drafts) != nil {
+			jsonResponse(w, 503, `{"error":"permission_drafts_invalid"}`)
+			return
+		}
+		writeJSON(w, 200, drafts)
+	})
+	mux.HandleFunc("PUT /api/admin/postgres/auth/permission-drafts", func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioReadRequest(r)
+		drafts, decodeErr := httpx.DecodeOne[[]postgres.PermissionDraft](body)
+		if err != nil || decodeErr != nil || postgres.ValidatePermissionDrafts(drafts, false) != nil {
+			jsonResponse(w, 400, `{"error":"invalid_permission_drafts"}`)
+			return
+		}
+		raw, _ := json.Marshal(drafts)
+		_, err = db.ExecContext(r.Context(), `INSERT INTO settings(key,value) VALUES('postgres_permission_drafts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, string(raw))
+		if err != nil {
+			jsonResponse(w, 503, `{"error":"permission_drafts_not_saved"}`)
+			return
+		}
+		writeJSON(w, 200, drafts)
+	})
+	mux.HandleFunc("POST /api/admin/postgres/auth/permission-drafts/preview", func(w http.ResponseWriter, r *http.Request) {
+		body, err := ioReadRequest(r)
+		drafts, decodeErr := httpx.DecodeOne[[]postgres.PermissionDraft](body)
+		if err != nil || decodeErr != nil || pg == nil {
+			jsonResponse(w, 400, `{"error":"invalid_permission_drafts"}`)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+		preview, err := pg.PreviewPermissionDrafts(ctx, drafts)
+		if err != nil {
+			jsonResponse(w, 409, `{"error":"permission_preview_requires_reviewed_rules_new_roles_and_eligible_tables"}`)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"sql": preview, "status": "review_required"})
+	})
 	mux.HandleFunc("GET /api/admin/postgres/auth/roles", func(w http.ResponseWriter, r *http.Request) {
 		if pg == nil {
 			jsonResponse(w, 503, `{"error":"postgres_not_configured"}`)
