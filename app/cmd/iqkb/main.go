@@ -638,7 +638,13 @@ func setupHandlerWithCheck(db *sql.DB, bootstrapSecret, apiKey string, encryptio
 			} else if state == "not_provisioned" || state == "not_found" {
 				status = http.StatusNotFound
 			}
-			writeJSON(w, status, map[string]string{"error": "source_check_failed", "status": state})
+			failure := map[string]string{"error": "source_check_failed", "status": state}
+			var sourceErr *sourceAccessError
+			if errors.As(err, &sourceErr) {
+				failure["source"] = sourceErr.source
+			}
+			slog.Warn("workspace source access check failed", "source", failure["source"], "status", state)
+			writeJSON(w, status, failure)
 			return
 		}
 		tx, err := db.BeginTx(r.Context(), nil)
@@ -679,6 +685,17 @@ func setupReady(db *sql.DB, apiKey string, encryptionKey []byte) (bool, error) {
 	return enabled && modelTested(db, apiKey, encryptionKey), nil
 }
 
+type sourceAccessError struct {
+	source string
+	cause  error
+}
+
+func (e *sourceAccessError) Error() string { return e.source + " source check failed" }
+func (e *sourceAccessError) Unwrap() error { return e.cause }
+func sourceAccessFailure(source, state string, err error) (string, error) {
+	return state, &sourceAccessError{source: source, cause: err}
+}
+
 func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []byte, assertion, socketPath string, pg *postgres.Connector, principal identity.Principal) (string, error) {
 	oneDrive, err := oneDriveEnabled(db)
 	if err != nil {
@@ -713,64 +730,64 @@ func checkEnabledSourceAccess(ctx context.Context, db *sql.DB, encryptionKey []b
 	if oneDrive {
 		state, err := graph.NewOneDrive(socketPath).Check(ctx, assertion)
 		if err != nil {
-			return state, err
+			return sourceAccessFailure("onedrive", state, err)
 		}
 	}
 	if sharePointEnabled == 1 {
 		sites, err := sharePointSites(db)
 		if err != nil || len(sites) == 0 {
-			return "invalid_site", errors.New("SharePoint source has no configured sites")
+			return sourceAccessFailure("sharepoint", "invalid_site", errors.New("SharePoint source has no configured sites"))
 		}
 		connector := graph.NewSharePoint(socketPath)
 		for _, site := range sites {
 			state, err := connector.Check(ctx, assertion, site)
 			if err != nil {
-				return state, err
+				return sourceAccessFailure("sharepoint", state, err)
 			}
 		}
 	}
 	if outlook {
 		state, err := graph.NewOutlook(socketPath).Check(ctx, assertion)
 		if err != nil {
-			return state, err
+			return sourceAccessFailure("outlook", state, err)
 		}
 	}
 	if teamsChats {
 		state, err := graph.NewTeamsChats(socketPath).Check(ctx, assertion)
 		if err != nil {
-			return state, err
+			return sourceAccessFailure("teams-chats", state, err)
 		}
 	}
 	if teamsChannels {
 		state, err := graph.NewTeamsChannels(socketPath).Check(ctx, assertion)
 		if err != nil {
-			return state, err
+			return sourceAccessFailure("teams-channels", state, err)
 		}
 	}
 	if postgresActive {
 		if pg == nil {
-			return "postgres_not_configured", errors.New("PostgreSQL is not configured")
+			return sourceAccessFailure("postgres", "postgres_not_configured", errors.New("PostgreSQL is not configured"))
 		}
 		if principal.VerifiedEmail == "" {
-			return "postgres_verified_email_required", errors.New("verified organizational email is required")
+			return sourceAccessFailure("postgres", "postgres_verified_email_required", errors.New("verified organizational email is required"))
 		}
 		pg, databaseIdentity, password, err := postgresAccess(ctx, db, encryptionKey, pg, principal)
 		if err != nil {
-			return "postgres_credentials_required", err
+			return sourceAccessFailure("postgres", "postgres_credentials_required", err)
 		}
 		if err := pg.CheckIdentity(ctx, databaseIdentity, password); err != nil {
-			return "permission_denied", err
+			return sourceAccessFailure("postgres", "permission_denied", err)
 		}
 		tools, err := postgres.Catalog(db)
 		if err != nil || len(tools) == 0 {
-			return "approved_query_required", errors.New("an approved PostgreSQL query is required")
+			return sourceAccessFailure("postgres", "approved_query_required", errors.New("an approved PostgreSQL query is required"))
 		}
 		if !postgresProfilesReady(ctx, db, pg, principal.TenantID, tools) {
-			return "second_user_test_required", errors.New("each PostgreSQL profile requires tests from two distinct mapped users")
+			return sourceAccessFailure("postgres", "second_user_test_required", errors.New("each PostgreSQL profile requires tests from two distinct mapped users"))
 		}
 		for _, tool := range tools {
 			if err := checkPostgresTool(ctx, pg, databaseIdentity, password, tool); err != nil {
-				return "approved_query_failed", errors.New("an approved PostgreSQL query could not be executed")
+				return sourceAccessFailure("postgres", "approved_query_failed", errors.New("an approved PostgreSQL query could not be executed"))
 			}
 		}
 	}

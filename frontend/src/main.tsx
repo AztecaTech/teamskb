@@ -23,6 +23,7 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [setup, setSetup] = useState<SetupStatus | null>(null);
   const [setupStep, setSetupStep] = useState(0);
+  const [failedSource, setFailedSource] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [provider, setProvider] = useState('openai');
   const [model, setModel] = useState('');
@@ -409,6 +410,17 @@ function App() {
     finally { setAdminBusy(false); }
   }
 
+  async function checkOneDrive() {
+    setAdminBusy(true); setAdminMessage('');
+    try {
+      const response = await api('/api/admin/checks/onedrive', { method: 'POST' });
+      const result = await response.json() as { status?: string };
+      if (!response.ok) throw new Error(`OneDrive check failed (${result.status || 'unavailable'}). Check Microsoft consent, your OneDrive provisioning, and service connectivity.`);
+      setAdminMessage('OneDrive access passed.');
+    } catch (error) { setAdminMessage(error instanceof Error ? error.message : 'OneDrive check failed.'); }
+    finally { setAdminBusy(false); }
+  }
+
   async function checkPostgres() {
     setAdminBusy(true);
     setAdminMessage('');
@@ -595,13 +607,21 @@ function App() {
     event.preventDefault();
     setAdminBusy(true);
     setAdminMessage('');
+    setFailedSource('');
     try {
       const response = await api('/api/setup/activate', {
         method: 'POST', headers: { 'X-Setup-Secret': bootstrapSecret },
       });
       if (!response.ok) {
-        const failure = await response.json() as { error?: string; status?: string };
-        if (failure.error === 'source_check_failed') throw new Error(`Source access check failed (${failure.status || 'unavailable'}). Return to Sources to check the enabled connections and Microsoft consent, then retry.`);
+        const failure = await response.json() as { error?: string; status?: string; source?: string };
+        if (failure.error === 'source_check_failed') {
+          const sourceNames: Record<string, string> = { onedrive: 'OneDrive', sharepoint: 'SharePoint', outlook: 'Outlook', 'teams-chats': 'Teams chats', 'teams-channels': 'Teams channels', postgres: 'PostgreSQL' };
+          const source = failure.source ? sourceNames[failure.source] || 'A source' : 'A source';
+          const guidance = failure.status === 'consent_required' ? 'Check Microsoft delegated consent and sign in again.' : failure.status === 'permission_denied' ? 'Check the signed-in account’s permissions.' : failure.status === 'not_provisioned' || failure.status === 'not_found' ? 'This source is not provisioned or could not be found for your account.' : failure.source === 'postgres' ? 'Check the database authorization adapter, your access, and the approved queries.' : 'The source could not be reached or its service rejected the request. Check it below and retry.';
+          setFailedSource(failure.source || '');
+          setSetupStep(1);
+          throw new Error(`${source} blocked activation (${failure.status || 'unavailable'}). ${guidance} You can disable a source you do not need and activate with the remaining sources.`);
+        }
         throw new Error(response.status === 409 ? 'Save and check your provider and enable at least one source before activating.' : 'Activation failed. Check the one-time setup secret and your administrator access, then retry.');
       }
       setBootstrapSecret('');
@@ -695,7 +715,8 @@ function App() {
       <p className="muted">One source is enough to get started. Only enable sources your organization has approved.</p>
       <label className="source-toggle"><input type="checkbox" checked={sourceEnabled} disabled={adminBusy} onChange={(event) => void toggleOneDrive(event.target.checked)} /> Enable search in each user’s own OneDrive</label>
       <p className="muted">Start with personal documents. Microsoft consent and access are checked during activation.</p>
-      <details className="source-setup"><summary>SharePoint documents {sharePointEnabled ? '· Enabled' : '· Optional'}</summary>
+      <button type="button" disabled={adminBusy || !sourceEnabled} onClick={() => void checkOneDrive()}>Check OneDrive</button>
+      <details className="source-setup" open={failedSource === 'sharepoint' || undefined}><summary>SharePoint documents {sharePointEnabled ? '· Enabled' : '· Optional'}</summary>
         <label>SharePoint site URLs<textarea value={sharePointSiteUrls} onChange={(event) => setSharePointSiteUrls(event.target.value)} rows={3} placeholder="https://contoso.sharepoint.com/sites/Research" disabled={adminBusy} /></label>
         <p className="muted">One site per line, up to five. Searches each site’s default document library. Delegated Sites.Read.All consent is required; each user’s access is checked when searching and downloading.</p>
         <div className="button-row">
@@ -704,22 +725,22 @@ function App() {
           <button type="button" disabled={adminBusy || !sharePointEnabled} onClick={() => void saveSharePoint(false)}>Disable</button>
         </div>
       </details>
-      <details className="source-setup"><summary>Teams chats {teamsChatsEnabled ? '· Enabled' : '· Optional'}</summary>
+      <details className="source-setup" open={failedSource === 'teams-chats' || undefined}><summary>Teams chats {teamsChatsEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={teamsChatsEnabled} disabled={adminBusy} onChange={(event) => void toggleTeamsChats(event.target.checked)} /> Enable search in each user’s Teams chats</label>
         <p className="muted">Searches recent messages in the user’s private and group chats (up to ten chats and twenty messages per chat). Delegated Chat.Read consent is required. Channel messages are not included.</p>
         <button type="button" disabled={adminBusy || !teamsChatsEnabled} onClick={() => void checkTeamsChats()}>Check Teams chats</button>
       </details>
-      <details className="source-setup"><summary>Teams channels {teamsChannelsEnabled ? '· Enabled' : '· Optional'}</summary>
+      <details className="source-setup" open={failedSource === 'teams-channels' || undefined}><summary>Teams channels {teamsChannelsEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={teamsChannelsEnabled} disabled={adminBusy} onChange={(event) => void toggleTeamsChannels(event.target.checked)} /> Enable search in each user’s joined Teams channels</label>
         <p className="muted">Searches up to five joined teams, five channels per team, and twenty recent root messages per channel. Delegated Team.ReadBasic.All, Channel.ReadBasic.All, and ChannelMessage.Read.All consent is required. Users’ channel membership is checked by Graph.</p>
         <button type="button" disabled={adminBusy || !teamsChannelsEnabled} onClick={() => void checkTeamsChannels()}>Check Teams channels</button>
       </details>
-      <details className="source-setup"><summary>Outlook email {outlookEnabled ? '· Enabled' : '· Optional'}</summary>
+      <details className="source-setup" open={failedSource === 'outlook' || undefined}><summary>Outlook email {outlookEnabled ? '· Enabled' : '· Optional'}</summary>
         <label className="source-toggle"><input type="checkbox" checked={outlookEnabled} disabled={adminBusy} onChange={(event) => void toggleOutlook(event.target.checked)} /> Enable search in each user’s own Outlook mailbox</label>
         <p className="muted">Searches a few matching message subjects and text bodies. Delegated Mail.Read consent is required; messages are read as the signed-in user. Attachments and shared mailboxes are not searched.</p>
         <button type="button" disabled={adminBusy || !outlookEnabled} onClick={() => void checkOutlook()}>Check Outlook</button>
       </details>
-      {postgresConfigured && <details className="source-setup"><summary>PostgreSQL · Advanced {postgresEnabled ? '· Enabled' : '· Optional'}</summary>
+      {postgresConfigured && <details className="source-setup" open={failedSource === 'postgres' || undefined}><summary>PostgreSQL · Advanced {postgresEnabled ? '· Enabled' : '· Optional'}</summary>
         <h3>Database authorization</h3>
         <p className="muted">Connect using Dokploy credentials, match each Teams email to a database user, and apply that user's permissions. An administrator configures the adapter once.</p>
         <p className="muted">{sharedDatabaseCredentials ? 'Shared database credentials are configured.' : 'Add the service username and password to POSTGRES_DSN in Dokploy and redeploy to use automatic matching. The legacy per-user login flow remains available below.'}</p>
