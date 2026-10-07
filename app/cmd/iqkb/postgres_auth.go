@@ -166,11 +166,19 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 		defer cancel()
 		preview, err := pg.PreviewPermissionDrafts(ctx, drafts)
 		if err != nil {
-			jsonResponse(w, 409, `{"error":"permission_preview_requires_reviewed_rules_new_roles_and_eligible_tables"}`)
+			writeJSON(w, 409, map[string]string{"error": postgres.PermissionDeploymentFailureCode(err)})
 			return
 		}
-		writeJSON(w, 200, map[string]string{"sql": preview, "status": "review_required"})
+		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
+		adapter, err := loadPostgresAdapter(db)
+		if err != nil || adapter == nil {
+			writeJSON(w, 200, map[string]any{"sql": preview, "status": "review_required", "canApply": false})
+			return
+		}
+		expires := time.Now().Add(15 * time.Minute).Unix()
+		writeJSON(w, 200, map[string]any{"sql": preview, "status": "review_required", "canApply": true, "adapterFingerprint": adapter.Fingerprint(), "previewExpiresAt": expires, "previewToken": permissionPreviewToken(key, principal, adapter.Fingerprint(), preview, drafts, expires)})
 	})
+	mux.HandleFunc("POST /api/admin/postgres/auth/permission-drafts/apply", postgresPermissionApplyHandler(db, key, pg))
 	mux.HandleFunc("GET /api/admin/postgres/auth/roles", func(w http.ResponseWriter, r *http.Request) {
 		if pg == nil {
 			jsonResponse(w, 503, `{"error":"postgres_not_configured"}`)

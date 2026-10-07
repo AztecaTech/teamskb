@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type PermissionDraft struct {
@@ -86,7 +88,8 @@ func SensitiveAuthorizationField(name string) bool {
 	return false
 }
 
-// Produce a reviewable deployment artifact, never execute it automatically.
+// Produce a reviewable deployment artifact. Application requires a separate,
+// explicit administrator action bound to this exact preview.
 // New roles avoid collisions with existing policies whose OR combination could
 // broaden the rules. Every role is read-only and every field is explicit.
 func CompilePermissionDrafts(drafts []PermissionDraft) (string, error) {
@@ -153,34 +156,125 @@ func (c *Connector) PreviewPermissionDrafts(ctx context.Context, drafts []Permis
 	}
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)
+	return validatePermissionDeployment(ctx, tx, drafts, false)
+}
+
+func validatePermissionDeployment(ctx context.Context, tx pgx.Tx, drafts []PermissionDraft, lock bool) (string, error) {
 	for _, draft := range drafts {
 		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, draft.ExecutionRole).Scan(&exists); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, draft.ExecutionRole).Scan(&exists); err != nil {
 			return "", err
 		}
 		if exists {
-			return "", errors.New("deployment requires a new execution role")
+			return "", &PermissionDeploymentError{Code: "execution_role_already_exists"}
 		}
 		for _, rule := range draft.Resources {
 			qualified := pgx.Identifier{rule.Schema, rule.Relation}.Sanitize()
+			if lock {
+				if _, err := tx.Exec(ctx, "LOCK TABLE "+qualified+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+					return "", err
+				}
+			}
 			var table bool
 			var publicGrant bool
-			err = tx.QueryRow(ctx, `SELECT c.relkind IN ('r','p'),EXISTS(SELECT 1 FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a WHERE a.grantee=0 AND a.privilege_type='SELECT') OR EXISTS(SELECT 1 FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND a.grantee=0 AND a.privilege_type='SELECT') FROM pg_class c WHERE c.oid=to_regclass($1)`, qualified).Scan(&table, &publicGrant)
+			err := tx.QueryRow(ctx, `SELECT c.relkind IN ('r','p'),EXISTS(SELECT 1 FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a WHERE a.grantee=0 AND a.privilege_type='SELECT') OR EXISTS(SELECT 1 FROM pg_attribute col CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE col.attrelid=c.oid AND a.grantee=0 AND a.privilege_type='SELECT') FROM pg_class c WHERE c.oid=to_regclass($1)`, qualified).Scan(&table, &publicGrant)
 			if err != nil || !table || publicGrant {
-				return "", errors.New("resource must be an existing base table without PUBLIC SELECT grants")
+				return "", &PermissionDeploymentError{Code: "resource_requires_base_table_without_public_select", Cause: err}
 			}
 			for _, field := range rule.Fields {
 				var readable bool
 				err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass($1) AND a.attname=$2 AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT'))`, qualified, field).Scan(&readable)
 				if err != nil || !readable {
-					return "", errors.New("resource field is missing or not readable")
+					return "", &PermissionDeploymentError{Code: "resource_field_missing_or_unreadable", Cause: err}
 				}
 			}
 		}
 	}
 	var grantee string
-	if err = tx.QueryRow(ctx, `SELECT session_user::text`).Scan(&grantee); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT session_user::text`).Scan(&grantee); err != nil {
 		return "", err
 	}
 	return compilePermissionDrafts(drafts, grantee)
+}
+
+type PermissionDeploymentError struct {
+	Code  string
+	Cause error
+}
+
+func (e *PermissionDeploymentError) Error() string { return e.Code }
+func (e *PermissionDeploymentError) Unwrap() error { return e.Cause }
+
+func PermissionDeploymentFailureCode(err error) string {
+	var failure *PermissionDeploymentError
+	if errors.As(err, &failure) && failure.Code == "database_deployment_outcome_unknown" {
+		return failure.Code
+	}
+	var databaseError *pgconn.PgError
+	if errors.As(err, &databaseError) {
+		switch databaseError.Code {
+		case "42501":
+			return "database_setup_privileges_required"
+		case "55P03", "57014":
+			return "database_setup_busy"
+		}
+	}
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "database_setup_busy"
+	}
+	return "permission_deployment_failed"
+}
+
+// Only server-compiled statements run here. The caller verifies the preview
+// signature while this transaction holds resource locks, before any DDL runs.
+// An error rolls back all roles, grants and policies in this deployment.
+func (c *Connector) ApplyPermissionDrafts(ctx context.Context, drafts []PermissionDraft, verifyPreview func(string) bool) error {
+	if !c.SharedCredentialsConfigured() || ValidatePermissionDrafts(drafts, true) != nil || len(drafts) == 0 || verifyPreview == nil {
+		return &PermissionDeploymentError{Code: "invalid_reviewed_permission_drafts"}
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	conn, err := pgx.ConnectConfig(connectCtx, c.service.Copy())
+	if err != nil {
+		return err
+	}
+	defer closeConnection(conn)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tx.Rollback(cleanupCtx)
+	}()
+	if err = setLimits(ctx, tx); err != nil {
+		return err
+	}
+	preview, err := validatePermissionDeployment(ctx, tx, drafts, true)
+	if err != nil {
+		return err
+	}
+	if !verifyPreview(preview) {
+		return &PermissionDeploymentError{Code: "permission_preview_changed_or_expired"}
+	}
+	// Remove only our compiler's transaction wrapper; pgx owns the transaction.
+	_, statements, found := strings.Cut(preview, "BEGIN;\n")
+	if !found || !strings.HasSuffix(statements, "COMMIT;\n") {
+		return errors.New("invalid compiled deployment")
+	}
+	statements = strings.TrimSuffix(statements, "COMMIT;\n")
+	if _, err = tx.Exec(ctx, statements); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		if errors.Is(err, pgx.ErrTxCommitRollback) {
+			return err
+		}
+		return &PermissionDeploymentError{Code: "database_deployment_outcome_unknown", Cause: err}
+	}
+	return nil
 }

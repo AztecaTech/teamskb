@@ -2,6 +2,9 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -79,5 +82,27 @@ CREATE POLICY broad_existing_policy ON iqkb_rule_test.records FOR SELECT TO PUBL
 	}
 	if !found {
 		t.Fatal("business resource without email/permission fields was omitted")
+	}
+	// A failure after role creation must roll back roles, grants and the RLS
+	// change, rather than leaving a partially installed permission mapping.
+	adminConnector, err := Open(t.Context(), strings.Replace(dsn, "iqkb_service:IQKB-test-service-only", "postgres:IQKB-test-admin-only", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = admin.Exec(t.Context(), `CREATE TABLE iqkb_rule_test.rollback_records(id text)`); err != nil {
+		t.Fatal(err)
+	}
+	rollbackDraft := PermissionDraft{Label: "rollback-label", ExecutionRole: "iqkb_rollback_role", Resources: []ResourcePermission{{Schema: "iqkb_rule_test", Relation: "rollback_records", Fields: []string{"id"}, Scope: "all", Reviewed: true}}}
+	policyHash := sha256.Sum256([]byte(rollbackDraft.ExecutionRole + "\x00iqkb_rule_test\x00rollback_records"))
+	policyName := "iqkb_rule_" + hex.EncodeToString(policyHash[:12])
+	if _, err = admin.Exec(t.Context(), "CREATE POLICY "+pgx.Identifier{policyName}.Sanitize()+" ON iqkb_rule_test.rollback_records USING (true)"); err != nil {
+		t.Fatal(err)
+	}
+	if err = adminConnector.ApplyPermissionDrafts(t.Context(), []PermissionDraft{rollbackDraft}, func(string) bool { return true }); err == nil {
+		t.Fatal("colliding policy did not fail application")
+	}
+	var roleExists, rls bool
+	if err = admin.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='iqkb_rollback_role'),relrowsecurity FROM pg_class WHERE oid='iqkb_rule_test.rollback_records'::regclass`).Scan(&roleExists, &rls); err != nil || roleExists || rls {
+		t.Fatalf("partial deployment survived rollback: role=%v rls=%v err=%v", roleExists, rls, err)
 	}
 }
