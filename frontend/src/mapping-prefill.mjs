@@ -11,7 +11,7 @@ export function candidateColumnMapping(candidate) {
   const mapping = {
     email: find(['email', 'emailaddress', 'useremail', 'mail', 'primaryemail']),
     userId: find(['userid', 'id', 'accountid']),
-    role: find(['databaserole', 'postgresrole', 'dbrole', 'role', 'rolename']),
+    role: find(['databaserole', 'postgresrole', 'dbrole', 'role', 'rolename', 'rolelabel', 'label', 'accessrole', 'usertype']),
     active: find(['active', 'isactive', 'enabled'], true),
     tenantId: find(['tenantid', 'organizationid']),
     permissionVersion: find(['permissionversion', 'permissionsversion', 'authversion']),

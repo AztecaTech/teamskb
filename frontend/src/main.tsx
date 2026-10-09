@@ -5,6 +5,7 @@ import { decodeRelationChoice, encodeRelationChoice } from './relation-choice.mj
 import { authorizationPrefill, candidateColumnMapping, queryPrefill } from './mapping-prefill.mjs';
 import './style.css';
 import ApplicationPermissionEditor from './ApplicationPermissionEditor';
+import PostgresQuickSetup from './PostgresQuickSetup';
 import type { IdentityAttributes, PostgresAuthAdapter, ReadRule } from './permissions/types';
 import { businessProfilePrefill, permissionRuleIssues } from './postgres-setup.mjs';
 
@@ -15,7 +16,7 @@ type SourceStatus = { id: string; kind: string; boundary: string; enabled: boole
 type PostgresIdentity = { objectId: string; verifiedEmail: string; databaseIdentity: string; reviewedBy: string; reviewedAt: string };
 type PostgresDiscovery = { relations: Array<{ schema: string; name: string; kind: string; supported: boolean; reason?: string; comment?: string }>; columns: Array<{ schema: string; relation: string; name: string; dataType: string; nullable: boolean; comment?: string }>; keys: Array<{ schema: string; relation: string; kind: string; columns: string[] }>; relationships: Array<{ name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }>; nextSchema?: string; nextName?: string };
 type PostgresQuery = { id: string; version: number; description: string; sql: string; parameters: Array<{ name: string; type: string }>; outputColumns: string[]; approvalRecord: string };
-type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; applicationRole?: string; emailStatus?: string; authorizationMode?: string };
+type PostgresCredentialStatus = { available: boolean; mapped: boolean; configured: boolean; verifiedEmail: string; mode?: string; status?: string; userId?: string; databaseRole?: string; applicationRole?: string; emailStatus?: string; authorizationMode?: string; roleLabelAccess?: boolean };
 type PostgresReadiness = { enabled: boolean; ready: boolean; state: string; message: string; next?: string; queries: number };
 type AuthorizationCandidate = { schema: string; relation: string; ready: boolean; missingColumns: string[]; columns?: { name: string; dataType: string }[] };
 type AuthorizationDiscovery = { candidates: AuthorizationCandidate[]; nextSchema?: string; nextName?: string };
@@ -54,6 +55,8 @@ function App() {
   const [sharedDatabaseCredentials, setSharedDatabaseCredentials] = useState(false);
   const [postgresAuth, setPostgresAuth] = useState<PostgresAuthAdapter>({ mode: 'application_rules', schema: '', relation: '', approvalRecord: '' });
   const [postgresAuthSaved, setPostgresAuthSaved] = useState(false);
+  const [postgresPanelOpen, setPostgresPanelOpen] = useState(false);
+  const [advancedDatabaseOpen, setAdvancedDatabaseOpen] = useState(false);
   const [mappingMessage, setMappingMessage] = useState('');
   const [roleDiscovery, setRoleDiscovery] = useState<{ applicationRoles: string[]; executionRoles: { name: string; policies: number }[]; truncated: boolean; permissions?: { relations: { schema: string; relation: string; columns: string[]; rlsEnabled: boolean; rlsForced: boolean; evidence: string }[]; relationships: { name: string; sourceSchema: string; sourceRelation: string; sourceColumns: string[]; targetSchema: string; targetRelation: string; targetColumns: string[] }[]; policies: { schema: string; relation: string; name: string; roles: string[]; using: string; check: string; rlsEnabled: boolean }[]; truncated: boolean } } | null>(null);
   const [roleMappingMessage, setRoleMappingMessage] = useState('');
@@ -193,6 +196,21 @@ function App() {
     void start();
     return () => { disposed = true; };
   }, []);
+
+  async function connectSimpleDatabase(adapter: PostgresAuthAdapter) {
+    setPostgresAuth(adapter); setPostgresAuthSaved(true);
+    const response = await api('/api/admin/sources/postgres', { method: 'PUT', body: JSON.stringify({ enabled: true }) });
+    if (!response.ok) throw new Error('Database access is saved, but source selection could not be saved. Retry Enable PostgreSQL search.');
+    setPostgresEnabled(true);
+    const [identity, profiles, queries, status] = await Promise.all([api('/api/postgres/credentials'), api('/api/postgres/profiles'), api('/api/admin/postgres/queries'), api('/api/setup/status')]);
+    if (identity.ok) setPostgresCredentialStatus(await identity.json() as PostgresCredentialStatus);
+    if (profiles.ok) setPostgresProfiles((await profiles.json() as {profiles:PostgresProfileSummary[]}).profiles);
+    if (queries.ok) setPostgresQueries((await queries.json() as {queries:PostgresQuery[]}).queries);
+    if (status.ok) setSetup(await status.json() as SetupStatus);
+    const readiness = await refreshPostgresReadiness();
+    if (!readiness.ready) throw new Error(readiness.message);
+    setAdminMessage('Database search is ready. Continue to activation.');
+  }
 
   async function saveProvider(event: React.FormEvent) {
     event.preventDefault();
@@ -656,8 +674,9 @@ function App() {
         const incomplete = (postgresAuth.rules || []).find((rule) => (rule.reviewed || rule.scope.kind !== 'pending') && permissionRuleIssues(rule,postgresAuth.claims).length);
         if (incomplete) throw new Error(`Complete ${incomplete.label}: ${incomplete.schema}.${incomplete.relation}. ${permissionRuleIssues(incomplete,postgresAuth.claims).join(' ')}`);
       }
-      const response = await api('/api/admin/postgres/auth', { method: 'PUT', body: JSON.stringify({ ...postgresAuth, roleMappings: postgresAuth.mode === 'application_rules' ? undefined : Object.fromEntries(Object.entries(postgresAuth.roleMappings || {}).filter(([, role]) => role.trim() !== '')), rules: postgresAuth.mode === 'application_rules' ? postgresAuth.rules : undefined }) });
+      const response = await api('/api/admin/postgres/auth', { method: 'PUT', body: JSON.stringify({ ...postgresAuth, roleLabelAccess: false, roleMappings: postgresAuth.mode === 'application_rules' ? undefined : Object.fromEntries(Object.entries(postgresAuth.roleMappings || {}).filter(([, role]) => role.trim() !== '')), rules: postgresAuth.mode === 'application_rules' ? postgresAuth.rules : undefined }) });
       if (!response.ok) throw new Error('Check the adapter view, approval reference, and shared username/password in Dokploy POSTGRES_DSN.');
+      setPostgresAuth(await response.json() as PostgresAuthAdapter);
       setPostgresAuthSaved(true);
       setPostgresProfileTests([]);
       setAdminMessage('Adapter saved. Checking your database identity…');
@@ -930,10 +949,10 @@ function App() {
     {session && <section className="account" aria-label="Signed-in account"><span>Access level</span><strong>{session.role}</strong></section>}
     {session?.role === 'User' && !setup?.active && <section className="setup-card"><h2>Your workspace is being set up</h2><p>Your administrator needs to connect a provider and source before you can ask questions.</p></section>}
 
-    {session && postgresCredentialStatus?.available && <section id="database-access" className="setup-card">
+    {session && postgresCredentialStatus?.available && (session.role === 'User' || !sharedDatabaseCredentials || advancedDatabaseOpen) && <section id="database-access" className="setup-card">
       <h2>Your PostgreSQL sign-in</h2>
       {postgresCredentialStatus.mode === 'shared-adapter' ? <>
-        <p role="status">{postgresCredentialStatus.status === 'connected' ? postgresCredentialStatus.authorizationMode === 'application_rules' ? `Connected as database user ${postgresCredentialStatus.userId}, application label ${postgresCredentialStatus.applicationRole}, using reviewed application permissions.` : `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'matched_permissions_required' ? `Email matched database user ${postgresCredentialStatus.userId} with application role “${postgresCredentialStatus.applicationRole}”. Permission rules still need an enforceable mapping before database search can run.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_confirmation_required' ? 'Enter your database email below to verify the match before searching.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
+        <p role="status">{postgresCredentialStatus.status === 'connected' ? postgresCredentialStatus.authorizationMode === 'application_rules' ? `Connected as database user ${postgresCredentialStatus.userId}, application label ${postgresCredentialStatus.applicationRole}, using reviewed application permissions.` : `Connected as ${postgresCredentialStatus.userId} with database role ${postgresCredentialStatus.databaseRole}.` : postgresCredentialStatus.status === 'matched_permissions_required' ? `Email matched database user ${postgresCredentialStatus.userId} with application role “${postgresCredentialStatus.applicationRole}”. Your administrator needs to allow this role to search the selected tables.` : postgresCredentialStatus.status === 'adapter_required' ? 'Your administrator needs to configure the database authorization adapter.' : postgresCredentialStatus.status === 'email_confirmation_required' ? 'Enter your database email below to verify the match before searching.' : postgresCredentialStatus.status === 'email_required' ? directoryEmailHelp(postgresCredentialStatus.emailStatus) : 'Your database user could not be authorized. Check the email match, account status, adapter view, and database role grants with your administrator.'}</p>
         <p className="muted">Your Teams account is matched automatically. The connection is supplied by your organization.</p>
         <form onSubmit={confirmDatabaseEmail}>
           <p className="muted">Your verified Microsoft email: {postgresCredentialStatus.verifiedEmail || 'unavailable'}. Your database account email must match it.</p>
@@ -942,7 +961,7 @@ function App() {
         </form>
         <button type="button" disabled={adminBusy} onClick={() => void checkDatabaseIdentity()}>Refresh database access</button>
         {postgresCredentialMessage && <p role="status">{postgresCredentialMessage}</p>}
-        {postgresCredentialStatus.configured && postgresProfiles.length > 0 && <div><h3>Business profile tests</h3><p className="muted">Run tests with your resolved permissions. Each profile requires passing tests from two different database users.</p>{postgresProfiles.map((profile) => <div className="button-row" key={profile.id}><span>{profile.label} v{profile.version}</span><button type="button" disabled={adminBusy} onClick={() => void testPostgresProfile(profile.id)}>Test with my permissions</button></div>)}</div>}
+        {!postgresCredentialStatus.roleLabelAccess && postgresCredentialStatus.configured && postgresProfiles.length > 0 && <div><h3>Business profile tests</h3><p className="muted">Run tests with your resolved permissions. Advanced adapters require passing tests from two different database users.</p>{postgresProfiles.map((profile) => <div className="button-row" key={profile.id}><span>{profile.label} v{profile.version}</span><button type="button" disabled={adminBusy} onClick={() => void testPostgresProfile(profile.id)}>Test with my permissions</button></div>)}</div>}
       </> : <>
       {!postgresCredentialStatus.verifiedEmail ? <p role="status">Your Teams sign-in did not provide the verified email required by the current database integration. An email entered in the mapping form cannot supply this claim. Ask your administrator to check the identity configuration.</p> : !postgresCredentialStatus.mapped ? <p role="status">Your signed-in email is {postgresCredentialStatus.verifiedEmail}. An administrator must map this exact email and your Entra object ID ({session.objectId}) to your existing PostgreSQL login.</p> : <>
       <p className="muted">Your verified account {postgresCredentialStatus.verifiedEmail} is bound to an existing database login. Enter your own database password; it is encrypted for your account and used only for your searches.</p>
@@ -1008,7 +1027,13 @@ function App() {
         <p className="muted">Searches a few matching message subjects and text bodies. Delegated Mail.Read consent is required; messages are read as the signed-in user. Attachments and shared mailboxes are not searched.</p>
         <button type="button" disabled={adminBusy || !outlookEnabled} onClick={() => void checkOutlook()}>Check Outlook</button>
       </details>
-      {postgresConfigured && <details className="source-setup" open={failedSource === 'postgres' || undefined}><summary>PostgreSQL · Advanced {postgresEnabled ? (postgresReadiness?.ready ? '· Ready for activation' : '· Selected · Setup pending') : '· Optional'}</summary>
+      {postgresConfigured && <details className="source-setup" open={postgresPanelOpen || failedSource === 'postgres'} onToggle={(event) => setPostgresPanelOpen(event.currentTarget.open)}><summary>PostgreSQL {postgresEnabled ? (postgresReadiness?.ready ? '· Ready for activation' : '· Setup pending') : '· Optional'}</summary>
+        {sharedDatabaseCredentials && <PostgresQuickSetup active={(postgresPanelOpen || failedSource === 'postgres') && !advancedDatabaseOpen} adapter={postgresAuth} email={postgresCredentialStatus?.verifiedEmail || ''} disabled={adminBusy} api={api} onConnected={connectSimpleDatabase} />}
+        <label className="source-toggle"><input type="checkbox" checked={postgresEnabled} disabled={adminBusy} onChange={(event) => void togglePostgres(event.target.checked)} /> Enable PostgreSQL search</label>
+        {postgresReadiness?.ready && <p role="status">Database search is ready.</p>}
+        <p className="muted">The connection comes from Dokploy. Mapping and search settings are stored in IQ Knowledge; PostgreSQL stays read-only.</p>
+        <details className="setup-details" open={advancedDatabaseOpen} onToggle={(event) => setAdvancedDatabaseOpen(event.currentTarget.open)}><summary>Advanced database settings</summary>
+        {advancedDatabaseOpen && <>
         <h3 id="postgres-authorization">Database authorization</h3>
         <p><strong>Read-only PostgreSQL connection.</strong> Setup and searches do not create or alter tables, roles, grants, policies, or business records. Mapping settings are saved in IQ Knowledge.</p>
         <p className="muted">Connect using Dokploy credentials, match each Teams email to a database user, and apply that user's permissions. An administrator configures the adapter once.</p>
@@ -1028,7 +1053,6 @@ function App() {
           <p className="muted">Saving records your administrator identity and the review time automatically.</p>
           <button type="submit" disabled={adminBusy || !sharedDatabaseCredentials}>{adminBusy ? 'Checking…' : postgresAuth.mode === 'application_rules' ? (postgresAuth.rules?.some((rule) => rule.reviewed && (!(postgresCredentialStatus?.applicationRole || matchedDatabaseLabel) || rule.label === (postgresCredentialStatus?.applicationRole || matchedDatabaseLabel))) ? 'Save permissions and continue' : 'Save mapping draft') : postgresAuthSaved ? 'Save and recheck my access' : 'Save and check my access'}</button>
         </form>
-        <label className="source-toggle"><input type="checkbox" checked={postgresEnabled} disabled={adminBusy} onChange={(event) => void togglePostgres(event.target.checked)} /> Enable PostgreSQL search</label>
         <div className="query-entry" aria-live="polite"><strong>{postgresEnabled ? postgresReadiness?.ready ? 'Ready for activation' : 'Selected — setup incomplete' : 'PostgreSQL search disabled'}</strong><p>{postgresSourceMessage || (postgresEnabled ? 'Check readiness to see what remains before PostgreSQL queries can run.' : 'Select this source to configure database search.')}</p>{postgresReadiness && !postgresReadiness.ready && postgresReadiness.next && <button type="button" disabled={adminBusy} onClick={() => void goToPostgresSetupStep()}>{({ 'postgres-authorization': 'Complete authorization mapping', 'application-permissions': 'Choose my first resource', 'business-search-profile': 'Create search profile', 'database-access': 'Open database access', 'postgres-query-catalog': 'Configure searchable queries' } as Record<string, string>)[postgresReadiness.next] || 'Open required setup step'}</button>}</div>
         <p className="muted">Searches your organization's data using reviewed queries and the database connection configured by your administrator. Each query applies your verified database identity and the selected authorization adapter. PostgreSQL OAuth is unsupported.</p>
         <button type="button" disabled={adminBusy || !postgresEnabled} onClick={() => void checkPostgres()}>Check readiness</button>
@@ -1089,6 +1113,8 @@ function App() {
           <button type="submit" disabled={adminBusy}>Save approved query version</button>
         </form>
         </>}
+        </>}
+        </details>
       </details>}
       {!setup?.active && <><button type="button" disabled={adminBusy || !setup?.wizardReady} onClick={() => { setSetupStep(2); setAdminMessage(''); }}>Continue to activation</button>{!setup?.wizardReady && <p className="muted">Connect your provider and enable at least one source to continue.</p>}</>}
       </div>

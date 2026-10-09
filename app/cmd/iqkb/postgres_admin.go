@@ -524,7 +524,7 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 					}
 				}
 			}
-			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "authorizationMode": func() string {
+			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "roleLabelAccess": adapter != nil && adapter.RoleLabelAccess, "authorizationMode": func() string {
 				if adapter != nil {
 					return adapter.Mode
 				}

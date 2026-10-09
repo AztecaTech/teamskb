@@ -1,5 +1,44 @@
 # PostgreSQL authorization adapters
 
+## Simple setup with role labels
+
+Keep the Dokploy URI. Open PostgreSQL in Sources, confirm the prefilled Microsoft
+email, select searchable tables and choose their allowed roles, then **Save and
+connect**. The app recognizes a compatible users relation automatically (asks for
+one choice when ambiguous), loads active role labels, chooses supported search
+fields and an existing non-null unique key, compiles search profiles and tests the
+current account. No SQL, execution-role translation, approval ticket or manual
+profile setup is required. No resources are selected before administrator input.
+
+Detected labels are exact IQ Knowledge role identifiers with no built-in meaning.
+Selecting a table explicitly grants the matched role all-row access to the fields
+shown in its search summary; other roles require their own checkbox. This defines
+IQ Knowledge's search policy. It does not infer or reproduce another application's
+hidden code rules. Password/token fields and structured/custom types are excluded.
+Tables without a supported existing key and text column require Advanced setup.
+
+`roleLabelAccess: true` is limited to the internal application adapter with reviewed
+all-row rules and no execution-role translations or identity claims. It requires
+one current, successful user/profile test; native, external and scoped adapters
+retain two-user verification. Every search still re-resolves one active user with
+the verified email and applies exact role/table/field rules. Unselected or newly
+introduced role labels remain denied. Removing a role revokes its access.
+
+`POST /api/admin/postgres/auth/labels` reads active, tenant-filtered labels for a
+validated mapping. `POST /api/admin/postgres/auth/quick-setup` accepts mapping,
+email and table/role selections, re-derives fields from catalog metadata, validates
+and tests generated profiles, then atomically stores the adapter, search catalog,
+email proof and test evidence in IQ Knowledge's SQLite store. Failed checks
+preserve the prior setup. Existing reviewed advanced policies cannot be replaced
+by this endpoint. The CRM backend and external database are never modified.
+
+Implementation: `postgres/role_label_setup.go` handles labels and metadata drafts;
+`cmd/iqkb/postgres_quick_setup.go` handles orchestration and local persistence;
+`frontend/src/PostgresQuickSetup.tsx` owns the simple UI. Technical mapping,
+individual fields, row scopes and custom profiles are under **Advanced database
+settings**. Run the browser fixture with `--simple --simple-fresh` to exercise the
+automatic mapping and setup path.
+
 ## Maintaining the adapter
 
 The permission API and saved JSON configuration keep the same field names.
@@ -38,10 +77,11 @@ browser fixture covers fresh/internal-saved/external setup; add
 `--automatic --stale-provider` to verify a delayed external response cannot
 repopulate a switched internal adapter.
 
-## Permission adapter inside IQ Knowledge
+## Advanced permission adapter inside IQ Knowledge
 
-Keep the direct `POSTGRES_DSN` supplied by Dokploy. In Sources, select
-**Application permissions** and configure the existing user relation and its
+Keep the direct `POSTGRES_DSN` supplied by Dokploy. For individual field or row
+limits, open **Advanced database settings**, select **Application permissions**
+and configure the existing user relation and its
 email, stable user ID, application-label and active columns. These mappings and
 the permitted resource/field/row rules are stored in IQ Knowledge's own settings.
 No CRM backend deployment, permission endpoint, shared CRM credential, external
@@ -60,7 +100,7 @@ Identity and mapped attributes are read from exactly one active database account
 on every operation. The server compiles the configured row and field restrictions
 into profile queries before retrieval, including membership predicates against
 existing tables. Only read-only PostgreSQL transactions are used. Configuration
-changes invalidate email confirmation/profile evidence; existing two-user profile
+changes invalidate email confirmation/profile evidence; advanced two-user profile
 checks remain required. Configuration is saved only in IQ Knowledge, never in the
 source database. There are no application role names, CRM relation names or
 production identifiers embedded in this adapter.

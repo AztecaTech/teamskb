@@ -15,16 +15,19 @@ import (
 // AdapterConfig maps an existing identity relation and a reviewed authorization
 // provider. Clients never supply their effective label or identity attributes.
 type AdapterConfig struct {
-	Mode             string                `json:"mode"`
-	PermissionSource string                `json:"permissionSource,omitempty"`
-	Schema           string                `json:"schema"`
-	Relation         string                `json:"relation"`
-	ApprovalRecord   string                `json:"approvalRecord"`
-	Columns          *AuthorizationColumns `json:"columns,omitempty"`
-	TenantScope      string                `json:"tenantScope,omitempty"`
-	RoleMappings     map[string]string     `json:"roleMappings,omitempty"`
-	Rules            []authorization.Rule  `json:"rules,omitempty"`
-	Claims           map[string]string     `json:"claims,omitempty"`
+	Mode             string `json:"mode"`
+	PermissionSource string `json:"permissionSource,omitempty"`
+	// RoleLabelAccess is an IQ Knowledge table-access policy, not a claim that
+	// application labels are PostgreSQL roles or reproduce another app's rules.
+	RoleLabelAccess bool                  `json:"roleLabelAccess,omitempty"`
+	Schema          string                `json:"schema"`
+	Relation        string                `json:"relation"`
+	ApprovalRecord  string                `json:"approvalRecord"`
+	Columns         *AuthorizationColumns `json:"columns,omitempty"`
+	TenantScope     string                `json:"tenantScope,omitempty"`
+	RoleMappings    map[string]string     `json:"roleMappings,omitempty"`
+	Rules           []authorization.Rule  `json:"rules,omitempty"`
+	Claims          map[string]string     `json:"claims,omitempty"`
 }
 
 type AuthorizationColumns struct {
@@ -64,6 +67,16 @@ func AuthorizationFailureCode(err error) string {
 }
 
 func (a AdapterConfig) Validate() error {
+	if a.RoleLabelAccess {
+		if a.Mode != "application_rules" || a.UsesExternalPermissions() || len(a.Claims) != 0 || len(a.RoleMappings) != 0 {
+			return errors.New("role label access requires the internal application adapter")
+		}
+		for _, rule := range a.Rules {
+			if !rule.Reviewed || rule.Scope.Kind != "all" {
+				return errors.New("role label access requires explicit reviewed table access")
+			}
+		}
+	}
 	if a.PermissionLocation() != InternalPermissionSource && a.PermissionLocation() != ExternalPermissionSource {
 		return errors.New("invalid permission adapter location")
 	}

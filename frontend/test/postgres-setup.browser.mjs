@@ -21,12 +21,14 @@ try {
   await server.listen();
   const address = server.httpServer.address();
   browser = await playwright.chromium.launch({ headless: true, ...(process.argv[3] ? { executablePath: process.argv[3] } : {}) });
-  const page = await browser.newPage();
+  const page = await browser.newPage({viewport:process.argv.includes('--mobile')?{width:390,height:844}:{width:1280,height:1000}});
   debugPage = page;
   page.setDefaultTimeout(12000);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   let adapter = { mode: 'application_rules', schema: 'custom', relation: 'accounts', approvalRecord: 'fixture', columns: { email: 'email', userId: 'id', role: 'label', active: 'enabled' }, rules: [] };
   const automatic = process.argv.includes('--automatic');
+  const simple = process.argv.includes('--simple');
+  if (process.argv.includes('--simple-fresh')) { adapter.schema=''; adapter.relation=''; adapter.columns=undefined; }
   adapter.permissionSource = automatic ? 'external' : 'internal';
   let nativeDenied = false;
   let holdNextPreview = false;
@@ -44,6 +46,7 @@ try {
   const requests = [];
   debug.errors=errors;debug.requests=requests;
   const resources = [...Array.from({length:25},(_,i)=>({schema:'custom',relation:`resource_${i+1}`,columns:['id','caption'],scalarColumns:['id','caption']})),{schema:'custom',relation:'records',columns:['record_key','caption','content','owner_key'],scalarColumns:['record_key','caption','content','owner_key']}];
+  resources[25].searchProfile={id:'table_synthetic',keyColumn:'record_key',labelColumn:'caption',searchColumns:['caption','content'],returnColumns:[{name:'caption',type:'text'},{name:'content',type:'text'}]};
   const metadata = { relations:[{schema:'custom',name:'records',kind:'BASE TABLE',supported:true}],columns:['record_key','caption','content'].map((name)=>({schema:'custom',relation:'records',name,dataType:name==='record_key'?'integer':'text',nullable:false})),keys:[{schema:'custom',relation:'records',kind:'primary',columns:['record_key']}],relationships:[] };
   await page.route('**/api/**',async(route)=>{
     const request=route.request();const url=new URL(request.url());const method=request.method();const data=request.postDataJSON();requests.push(`${method} ${url.pathname}`);
@@ -59,9 +62,16 @@ try {
       case '/api/admin/postgres/profile-tests':result={tests:[]};break;
       case '/api/admin/postgres/auth':
         if(method==='PUT'){adapter=automatic?{...data,rules:[],claims:{}}:data;status='email_confirmation_required';result=adapter;}else result={adapter,sharedCredentialsConfigured:true};break;
+      case '/api/admin/postgres/auth/discovery':result={candidates:[{schema:'custom',relation:'accounts',ready:false,columns:[{name:'id',dataType:'integer'},{name:'email',dataType:'text'},{name:'label',dataType:'text'},{name:'enabled',dataType:'boolean'}]}]};break;
+      case '/api/admin/postgres/auth/labels':assert.equal(data.schema,'custom');assert.equal(data.relation,'accounts');result={roles:['Operators','Other label'],currentRole:'Operators'};break;
+      case '/api/admin/postgres/auth/quick-setup':
+        assert.equal(data.email,'person@example.com');assert.deepEqual(data.resources,[{schema:'custom',relation:'records',roles:['Operators','Other label']}]);
+        adapter={...data.mapping,roleLabelAccess:true,permissionSource:'internal',rules:data.resources.flatMap((table)=>table.roles.map((label)=>({label,schema:table.schema,relation:table.relation,fields:['record_key','caption','content'],scope:{kind:'all'},reviewed:true})))};
+        profile={id:'table_synthetic',label:'records',capability:'text_search'};tests++;emailChecks++;status='connected';result={status,adapter,tables:1};break;
+      case '/api/admin/sources/postgres':assert.equal(data.enabled,true);result={enabled:true};break;
       case '/api/admin/postgres/auth/check':
         if(!automatic && !adapter.rules.some((rule)=>rule.label==='Operators'&&rule.reviewed)){code=424;result={error:'application_permission_rules_required'};}else result={userId:'7',databaseRole:'Operators',applicationRole:'Operators',authorizationMode:'application_rules'};break;
-      case '/api/postgres/credentials':result={available:true,mapped:status==='connected',configured:status==='connected',status,verifiedEmail:'person@example.com',applicationRole:status==='email_confirmation_required'?'':'Operators',userId:'7',authorizationMode:'application_rules',mode:'shared-adapter'};break;
+      case '/api/postgres/credentials':result={available:true,mapped:status==='connected',configured:status==='connected',status,verifiedEmail:'person@example.com',applicationRole:status==='email_confirmation_required'?'':'Operators',userId:'7',authorizationMode:'application_rules',mode:'shared-adapter',roleLabelAccess:!!adapter.roleLabelAccess};break;
       case '/api/postgres/email':
         emailChecks++;assert.equal(data.email,'person@example.com');status=automatic || adapter.rules.some((rule)=>rule.label==='Operators'&&rule.reviewed)?'connected':'matched_permissions_required';result={status,userId:'7',applicationRole:'Operators',authorizationMode:'application_rules'};break;
       case '/api/postgres/profiles':result={profiles:profile?[{id:profile.id,label:profile.label,version:1,capability:profile.capability}]:[]};break;
@@ -77,7 +87,7 @@ try {
       case '/api/admin/postgres/discovery':assert.equal(status,'connected');result=metadata;break;
       case '/api/admin/postgres/profiles/preview':result={version:1,sql:'compiled fixture SELECT',parameters:[],outputColumns:[],permissionExplanation:'Reviewed row and field rules apply.'};break;
       case '/api/admin/postgres/profiles':profile=data;assert.equal(data.approval,'');result={id:profile.id,version:1};break;
-      case '/api/admin/postgres/readiness':result={enabled:true,ready:false,state:profile?'second_user_test_required':status==='connected'?'approved_query_required':'application_resource_required',message:profile?'A second distinct database user must test.':'Configure the required resource and profile.',next:profile?'database-access':status==='connected'?'business-search-profile':'application-permissions',queries:profile?1:0};break;
+      case '/api/admin/postgres/readiness':result=simple&&profile?{enabled:true,ready:true,state:'ready',message:'Database search is ready.',queries:1}:{enabled:true,ready:false,state:profile?'second_user_test_required':status==='connected'?'approved_query_required':'application_resource_required',message:profile?'A second distinct database user must test.':'Configure the required resource and profile.',next:profile?'database-access':status==='connected'?'business-search-profile':'application-permissions',queries:profile?1:0};break;
       default:
         if(url.pathname.startsWith('/api/postgres/profiles/')&&url.pathname.endsWith('/test')){tests++;result={status:'passed'};}else{code=404;result={error:'unexpected_fixture_route'};errors.push(`${method} ${url.pathname}`);}
     }
@@ -85,13 +95,43 @@ try {
   });
   await page.goto(`http://127.0.0.1:${address.port}`);
   await page.getByRole('button',{name:/^2\s*Sources$/}).click();
+  await page.locator('details.source-setup').filter({has:page.locator('summary',{hasText:/^PostgreSQL/})}).locator('summary').first().click();
+  if (simple) {
+    await page.getByLabel('Search custom.records',{exact:true}).waitFor();
+    assert.equal(await page.getByLabel('Database email',{exact:true}).inputValue(),'person@example.com');
+    assert.equal(await page.getByRole('button',{name:'Save and connect',exact:true}).isDisabled(),true);
+    assert.equal(await page.getByLabel('Permission system').count(),0,'technical adapter questions must be closed');
+    assert.equal(await page.getByLabel('Unique key column').count(),0,'search profiles must be automatic');
+    assert.equal(await page.getByLabel('Search custom.records',{exact:true}).isChecked(),false,'no table is granted by a role name alone');
+    await page.getByLabel('Search custom.records',{exact:true}).check();
+    const choices=page.locator('#postgres-quick-setup fieldset');
+    assert.equal(await choices.getByLabel('Operators',{exact:true}).isChecked(),true,'selecting a table grants the matched role explicitly');
+    assert.equal(await choices.getByLabel('Other label',{exact:true}).isChecked(),false,'other labels must not acquire access implicitly');
+    await choices.getByLabel('Other label',{exact:true}).check();
+    const screenshot=process.argv.find((argument)=>argument.startsWith('--screenshot='));
+    if(screenshot) await page.screenshot({path:screenshot.slice('--screenshot='.length),fullPage:true});
+    await page.getByRole('button',{name:'Save and connect',exact:true}).click();
+    await page.getByText('Database search is ready.',{exact:true}).waitFor();
+    await page.getByLabel('Search custom.records',{exact:true}).waitFor();
+    assert.equal(await page.getByLabel('Search custom.records',{exact:true}).isChecked(),true,'saved table selection must be reused');
+    assert.equal(await choices.getByLabel('Other label',{exact:true}).isChecked(),true,'saved role selections must be reused');
+    assert.equal(tests,1,'the save action tests the prepared search configuration');
+    assert.equal(emailChecks,1,'the save action confirms the same Microsoft email');
+    assert.equal(await page.getByLabel('Permission system').count(),0,'connected setup must remain simple');
+    assert.ok(pagesLoaded>=2,'later catalog pages must be recognized');
+    assert.deepEqual(adapter.rules.map((rule)=>rule.label),['Operators','Other label']);
+    assert.ok(adapter.rules.every((rule)=>rule.scope.kind==='all'&&rule.reviewed));
+    assert.equal(requests.some((request)=>request.includes('/profiles/preview')),false,'no manual profile preview required');
+    assert.deepEqual(errors,[]);
+    console.log('PASS: detected arbitrary labels, automatic user mapping, explicit table/role access, hidden advanced fields, automatic profiles and a single-user access check.');
+  } else {
+  await page.getByText('Advanced database settings',{exact:true}).click();
   if (process.argv.includes('--unconfirmed')) {
     assert.equal(emailChecks,0,'first-time email confirmation must remain explicit');
     await page.getByLabel('Database account email').fill('person@example.com');
     await page.getByRole('button',{name:'Verify my database email',exact:true}).click();
     await page.getByText(/Email verified\. Matched database user 7/).waitFor();
   }
-  await page.locator('details.source-setup').filter({has:page.locator('summary',{hasText:'PostgreSQL · Advanced'})}).locator('summary').first().click();
   const priorEmailChecks=emailChecks;
   if (automatic) {
     await page.getByRole('heading',{name:'Automatically selected permissions',exact:true}).waitFor();
@@ -171,5 +211,6 @@ try {
   }
   assert.deepEqual(errors,[]);
   console.log(automatic ? 'PASS: explicit external source, no service metadata scan, profile prefill, email recheck, own-user test, and revocation without manual fallback.' : localSaved ? 'PASS: internal saved fields and row scope reused, unsaved policy edits preserved, profile prefill, email recheck and own-user test.' : 'PASS: resource pagination, complete permission review, automatic email recheck, profile prefill, optional note, own-user test, and second-user guidance.');
+  }
 } catch(error) { console.error(JSON.stringify(debug));if(debugPage)console.error((await debugPage.locator('body').innerText()).slice(0,2600));throw error; }
 finally { await browser?.close();await server.close(); }

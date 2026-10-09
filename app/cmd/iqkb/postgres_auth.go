@@ -114,6 +114,8 @@ func postgresAccessFailureCode(err error, fallback string) string {
 
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/postgres/auth/labels", postgresLabelDiscoveryHandler(pg))
+	mux.HandleFunc("POST /api/admin/postgres/auth/quick-setup", postgresQuickSetupHandler(db, pg))
 	mux.HandleFunc("GET /api/admin/postgres/auth/permissions", postgresPermissionPreviewHandler(db, pg))
 	mux.HandleFunc("GET /api/admin/postgres/auth/resources", func(w http.ResponseWriter, r *http.Request) {
 		if pg == nil {

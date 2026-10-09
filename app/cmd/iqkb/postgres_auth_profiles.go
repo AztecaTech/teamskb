@@ -96,6 +96,7 @@ func postgresProfilesReady(ctx context.Context, db *sql.DB, pg *postgres.Connect
 	if err != nil || adapter == nil {
 		return false
 	}
+	requiredUsers := adapter.RequiredProfileTestUsers()
 	for _, tool := range tools {
 		if len(tool.ProfileConfig) == 0 || string(tool.ProfileConfig) == "{}" {
 			continue
@@ -139,11 +140,11 @@ func postgresProfilesReady(ctx context.Context, db *sql.DB, pg *postgres.Connect
 			if err == nil && (resolved.UserID == e.resolved.UserID && resolved.Role == e.resolved.Role && resolved.PermissionVersion == e.resolved.PermissionVersion) {
 				users[resolved.UserID] = true
 			}
-			if len(users) >= 2 {
+			if len(users) >= requiredUsers {
 				break
 			}
 		}
-		if len(users) < 2 {
+		if len(users) < requiredUsers {
 			return false
 		}
 	}

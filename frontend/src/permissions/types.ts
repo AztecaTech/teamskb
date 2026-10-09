@@ -25,6 +25,13 @@ export type ReadRule = ResourceReference & {
 export type PermissionResource = ResourceReference & {
   columns: string[];
   scalarColumns?: string[];
+  searchProfile?: {
+    id: string;
+    keyColumn: string;
+    labelColumn: string;
+    searchColumns: string[];
+    returnColumns: { name: string; type: string }[];
+  };
 };
 
 export type PermissionPreview = {
@@ -48,6 +55,7 @@ export type PermissionResourcePage = {
 export type PostgresAuthAdapter = ResourceReference & {
   mode: string;
   permissionSource?: PermissionSource;
+  roleLabelAccess?: boolean;
   approvalRecord: string;
   columns?: {
     email: string;

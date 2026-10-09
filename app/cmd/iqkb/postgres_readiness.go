@@ -115,6 +115,11 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 			return
 		}
 		if !postgresProfilesReady(ctx, db, connector, principal.TenantID, tools) {
+			adapter, _ := loadPostgresAdapter(db)
+			if adapter != nil && adapter.RequiredProfileTestUsers() == 1 {
+				fail("profile_test_required", "Save and connect to check your selected database tables.", "postgres-authorization")
+				return
+			}
 			fail("second_user_test_required", "Business profiles require passing tests from two distinct mapped database users.", "database-access")
 			return
 		}

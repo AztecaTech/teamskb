@@ -39,6 +39,11 @@ textarea { resize: vertical; line-height: 1.5; }
 .source-setup .muted { margin: .5rem 0 .75rem; color: #78858b; font-size: .84rem; line-height: 1.5; }
 .source-setup textarea { margin-top: .1rem; font-size: .87rem; }
 .query-entry { margin: .85rem 0; padding: .8rem; border: 1px solid #e1e8eb; border-radius: .5rem; background: #f8fafb; }
+.quick-tables { max-height: 28rem; overflow-y: auto; margin-top: .75rem; padding: 0 .25rem; }
+.quick-tables .source-toggle { margin: .35rem 0; }
+.quick-tables fieldset { margin: .75rem 0; border: 1px solid #dce4e8; border-radius: .4rem; }
+.quick-tables legend { color: #344b55; font-size: .85rem; }
+.role-choices { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; }
 .query-entry pre { overflow-x: auto; padding: .7rem; border-radius: .4rem; background: #edf2f4; color: #243b44; font: .78rem/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ask-card { margin-top: 1.25rem; padding: 1.25rem; border: 1px solid #dce4e8; border-radius: .8rem; background: white; box-shadow: 0 4px 18px #1735410a; }
 .ask-card h2 { margin: 0 0 1rem; font-size: 1.1rem; }
