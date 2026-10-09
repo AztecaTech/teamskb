@@ -17,7 +17,7 @@ import (
 var errPostgresAdapterRequired = errors.New("configure a database authorization adapter first")
 var errPostgresEmailRequired = errors.New("trusted directory email is required")
 var errPostgresEmailConfirmationRequired = errors.New("confirm your database email first")
-var errPostgresPermissionMappingRequired = errors.New("email matched; permission rules require deployment")
+var errPostgresPermissionMappingRequired = errors.New("email matched; existing permissions require an authorization mapping")
 
 func databaseEmailKey(p identity.Principal) string {
 	return "postgres_email:" + p.TenantID + ":" + p.ObjectID
@@ -122,63 +122,13 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 		}
 		writeJSON(w, 200, page)
 	})
-	mux.HandleFunc("GET /api/admin/postgres/auth/permission-drafts", func(w http.ResponseWriter, r *http.Request) {
-		var raw string
-		err := db.QueryRowContext(r.Context(), `SELECT value FROM settings WHERE key='postgres_permission_drafts'`).Scan(&raw)
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, 200, []postgres.PermissionDraft{})
-			return
-		}
-		if err != nil {
-			jsonResponse(w, 503, `{"error":"permission_drafts_unavailable"}`)
-			return
-		}
-		var drafts []postgres.PermissionDraft
-		if json.Unmarshal([]byte(raw), &drafts) != nil {
-			jsonResponse(w, 503, `{"error":"permission_drafts_invalid"}`)
-			return
-		}
-		writeJSON(w, 200, drafts)
-	})
-	mux.HandleFunc("PUT /api/admin/postgres/auth/permission-drafts", func(w http.ResponseWriter, r *http.Request) {
-		body, err := ioReadRequest(r)
-		drafts, decodeErr := httpx.DecodeOne[[]postgres.PermissionDraft](body)
-		if err != nil || decodeErr != nil || postgres.ValidatePermissionDrafts(drafts, false) != nil {
-			jsonResponse(w, 400, `{"error":"invalid_permission_drafts"}`)
-			return
-		}
-		raw, _ := json.Marshal(drafts)
-		_, err = db.ExecContext(r.Context(), `INSERT INTO settings(key,value) VALUES('postgres_permission_drafts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, string(raw))
-		if err != nil {
-			jsonResponse(w, 503, `{"error":"permission_drafts_not_saved"}`)
-			return
-		}
-		writeJSON(w, 200, drafts)
-	})
-	mux.HandleFunc("POST /api/admin/postgres/auth/permission-drafts/preview", func(w http.ResponseWriter, r *http.Request) {
-		body, err := ioReadRequest(r)
-		drafts, decodeErr := httpx.DecodeOne[[]postgres.PermissionDraft](body)
-		if err != nil || decodeErr != nil || pg == nil {
-			jsonResponse(w, 400, `{"error":"invalid_permission_drafts"}`)
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-		defer cancel()
-		preview, err := pg.PreviewPermissionDrafts(ctx, drafts)
-		if err != nil {
-			writeJSON(w, 409, map[string]string{"error": postgres.PermissionDeploymentFailureCode(err)})
-			return
-		}
-		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
-		adapter, err := loadPostgresAdapter(db)
-		if err != nil || adapter == nil {
-			writeJSON(w, 200, map[string]any{"sql": preview, "status": "review_required", "canApply": false})
-			return
-		}
-		expires := time.Now().Add(15 * time.Minute).Unix()
-		writeJSON(w, 200, map[string]any{"sql": preview, "status": "review_required", "canApply": true, "adapterFingerprint": adapter.Fingerprint(), "previewExpiresAt": expires, "previewToken": permissionPreviewToken(key, principal, adapter.Fingerprint(), preview, drafts, expires)})
-	})
-	mux.HandleFunc("POST /api/admin/postgres/auth/permission-drafts/apply", postgresPermissionApplyHandler(db, key, pg))
+	// Reject former installation routes before opening any database connection.
+	// A cached client must not be able to install roles, grants or policies.
+	readOnly := func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusGone, map[string]string{"error": "postgres_read_only", "message": "PostgreSQL permission installation is disabled. Mapping uses existing permissions and is saved only in the app."})
+	}
+	mux.HandleFunc("/api/admin/postgres/auth/permission-drafts", readOnly)
+	mux.HandleFunc("/api/admin/postgres/auth/permission-drafts/", readOnly)
 	mux.HandleFunc("GET /api/admin/postgres/auth/roles", func(w http.ResponseWriter, r *http.Request) {
 		if pg == nil {
 			jsonResponse(w, 503, `{"error":"postgres_not_configured"}`)
@@ -269,7 +219,13 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 			writeJSON(w, 424, map[string]string{"error": postgres.AuthorizationFailureCode(err)})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"status": "connected", "userId": resolved.UserID, "databaseRole": resolved.Role})
+		adapter, _ := loadPostgresAdapter(db)
+		writeJSON(w, 200, map[string]any{"status": "connected", "userId": resolved.UserID, "databaseRole": resolved.Role, "authorizationMode": func() string {
+			if adapter != nil {
+				return adapter.Mode
+			}
+			return ""
+		}(), "applicationRole": resolved.ApplicationRole})
 	})
 	return mux
 }

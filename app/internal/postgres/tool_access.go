@@ -5,6 +5,9 @@ import "context"
 // CheckToolAccess checks privileges and result types without scanning data. The
 // actual selected query still runs with freshly resolved user permissions.
 func (c *Connector) CheckToolAccess(ctx context.Context, login, password string, tool QueryTool) error {
+	if c.applicationRules() {
+		return &AuthorizationError{Code: "application_rules_profiles_only"}
+	}
 	if err := ValidateQueryTool(tool); err != nil {
 		return err
 	}

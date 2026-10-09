@@ -94,6 +94,9 @@ func (c *Connector) CheckIdentity(ctx context.Context, databaseIdentity, passwor
 }
 
 func (c *Connector) Search(ctx context.Context, databaseIdentity, password, question string, limit int, tool QueryTool) ([]graph.Document, error) {
+	if c.applicationRules() {
+		return nil, &AuthorizationError{Code: "application_rules_profiles_only"}
+	}
 	if !ValidDatabaseIdentity(databaseIdentity) || password == "" || !validQuestion(question) || limit < 1 || limit > maxResults {
 		return nil, errors.New("invalid PostgreSQL search request")
 	}
@@ -161,15 +164,19 @@ func (c *Connector) SearchProfile(ctx context.Context, databaseIdentity, passwor
 	if err != nil {
 		return nil, errors.New("PostgreSQL profile is invalid")
 	}
-	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
+	conn, tx, resolved, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return nil, errors.New("PostgreSQL profile search failed")
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	actualFingerprint, err := validateProfileSchema(ctx, tx, profile)
+	actualFingerprint, err := c.profileSchema(ctx, tx, resolved, profile)
 	if err != nil || profile.SchemaFingerprint == "" || actualFingerprint != profile.SchemaFingerprint {
 		return nil, errors.New("PostgreSQL profile is stale, unsupported, or not readable by this login")
+	}
+	query, err = c.scopeProfileSQL(ctx, tx, resolved, profile, query, false)
+	if err != nil {
+		return nil, err
 	}
 	queryLimit := profileCandidateLimit(profile.Capability, limit)
 	rows, err := tx.Query(ctx, query, term, queryLimit)
@@ -266,13 +273,13 @@ func (c *Connector) SearchRelatedProfile(ctx context.Context, databaseIdentity, 
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile is invalid")
 	}
-	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
+	conn, tx, resolved, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile search failed")
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	fingerprint, err := validateProfileSchema(ctx, tx, profile)
+	fingerprint, err := c.profileSchema(ctx, tx, resolved, profile)
 	if err != nil || profile.SchemaFingerprint == "" || fingerprint != profile.SchemaFingerprint {
 		return nil, nil, errors.New("PostgreSQL profile is stale, unsupported, or not readable by this login")
 	}
@@ -280,6 +287,10 @@ func (c *Connector) SearchRelatedProfile(ctx context.Context, databaseIdentity, 
 	resolveSQL, err := CompileRelatedParentLookup(profile)
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile is invalid")
+	}
+	resolveSQL, err = c.scopeProfileSQL(ctx, tx, resolved, profile, resolveSQL, true)
+	if err != nil {
+		return nil, nil, err
 	}
 	rows, err := tx.Query(ctx, resolveSQL, term)
 	if err != nil {
@@ -341,6 +352,10 @@ func (c *Connector) SearchRelatedProfile(ctx context.Context, databaseIdentity, 
 		}
 	}
 	args = append(args, limit)
+	query, err = c.scopeProfileSQL(ctx, tx, resolved, profile, query, false)
+	if err != nil {
+		return nil, nil, err
+	}
 	result, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, nil, errors.New("PostgreSQL profile search failed")
@@ -365,13 +380,13 @@ func (c *Connector) ValidateRelatedProfile(ctx context.Context, databaseIdentity
 	if err != nil {
 		return errors.New("PostgreSQL profile is invalid")
 	}
-	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
+	conn, tx, resolved, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return errors.New("PostgreSQL profile test failed")
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	fingerprint, err := validateProfileSchema(ctx, tx, profile)
+	fingerprint, err := c.profileSchema(ctx, tx, resolved, profile)
 	if err != nil || fingerprint != profile.SchemaFingerprint {
 		return errors.New("PostgreSQL profile is stale or inaccessible")
 	}
@@ -387,6 +402,10 @@ func (c *Connector) ValidateRelatedProfile(ctx context.Context, databaseIdentity
 		args = append(args, value)
 	}
 	args = append(args, 1)
+	query, err = c.scopeProfileSQL(ctx, tx, resolved, profile, query, false)
+	if err != nil {
+		return err
+	}
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return errors.New("PostgreSQL profile test failed")

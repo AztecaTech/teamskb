@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"time"
 
@@ -49,7 +50,7 @@ func testAdapterProfile(w http.ResponseWriter, r *http.Request, db *sql.DB, key 
 		outcome = "failed"
 	}
 	current, err := scoped.ResolveIdentity(ctx, login, password)
-	if err != nil || current != resolved {
+	if err != nil || current.UserID != resolved.UserID || current.Role != resolved.Role || current.ApplicationRole != resolved.ApplicationRole || current.PermissionVersion != resolved.PermissionVersion || !maps.Equal(current.Claims, resolved.Claims) {
 		jsonResponse(w, 409, `{"error":"profile_test_stale"}`)
 		return
 	}

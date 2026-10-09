@@ -353,7 +353,16 @@ VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,object_id) DO UPDATE SET verified_emai
 			jsonResponse(w, profilePreparationStatus(err), `{"error":"`+profilePreparationErrorCode(err)+`"}`)
 			return
 		}
-		preview := map[string]any{"version": tool.Version, "sql": tool.SQL, "parameters": tool.Parameters, "outputColumns": tool.OutputColumns, "approvalRecord": tool.ApprovalRecord, "permissionExplanation": "These generated queries run read-only as each mapped user's own PostgreSQL LOGIN. Every user must have SELECT access to mapped columns; organizational row security remains authoritative."}
+		explanation := "These generated queries run read-only under the matched user's restricted PostgreSQL role. Existing grants and row policies remain authoritative."
+		adapter, adapterErr := loadPostgresAdapter(db)
+		if adapterErr != nil {
+			jsonResponse(w, 503, `{"error":"adapter_unavailable"}`)
+			return
+		}
+		if adapter != nil && adapter.Mode == "application_rules" {
+			explanation = "This is a profile query template. At execution, IQ Knowledge applies the matched user's reviewed resource, field and row rules before retrieval. The URI supplies the read-only connection; no database role changes are made."
+		}
+		preview := map[string]any{"version": tool.Version, "sql": tool.SQL, "parameters": tool.Parameters, "outputColumns": tool.OutputColumns, "approvalRecord": tool.ApprovalRecord, "permissionExplanation": explanation}
 		var savedProfile postgres.BusinessProfile
 		if json.Unmarshal(tool.ProfileConfig, &savedProfile) == nil && savedProfile.Capability == "related_list" {
 			parentSQL, compileErr := postgres.CompileRelatedParentLookup(savedProfile)
@@ -405,6 +414,15 @@ VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,object_id) DO UPDATE SET verified_emai
 		writeJSON(w, http.StatusOK, tool)
 	})
 	mux.HandleFunc("PUT /api/admin/postgres/queries", func(w http.ResponseWriter, r *http.Request) {
+		adapter, adapterErr := loadPostgresAdapter(db)
+		if adapterErr != nil {
+			jsonResponse(w, 503, `{"error":"adapter_unavailable"}`)
+			return
+		}
+		if adapter != nil && adapter.Mode == "application_rules" {
+			jsonResponse(w, 409, `{"error":"application_rules_profiles_only"}`)
+			return
+		}
 		body, err := ioReadRequest(r)
 		tool, decodeErr := httpx.DecodeOne[postgres.QueryTool](body)
 		if strings.TrimSpace(tool.Description) == "" {
@@ -503,7 +521,17 @@ func postgresCredentialHandler(db *sql.DB, encryptionKey []byte, pg *postgres.Co
 					}
 				}
 			}
-			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "status": state, "userId": resolved.UserID, "databaseRole": resolved.Role, "applicationRole": applicationRole})
+			writeJSON(w, 200, map[string]any{"available": true, "mapped": mapped, "configured": mapped, "verifiedEmail": principal.VerifiedEmail, "emailStatus": principal.DirectoryEmailStatus, "mode": "shared-adapter", "authorizationMode": func() string {
+				if adapter != nil {
+					return adapter.Mode
+				}
+				return ""
+			}(), "status": state, "userId": resolved.UserID, "databaseRole": resolved.Role, "applicationRole": func() string {
+				if mapped {
+					return resolved.ApplicationRole
+				}
+				return applicationRole
+			}()})
 			return
 		}
 		mapped := false

@@ -62,6 +62,9 @@ type DiscoveryPage struct {
 // Discover returns privilege-filtered metadata only. It never executes a query
 // against table rows and all work runs as the mapped login in a read-only tx.
 func (c *Connector) Discover(ctx context.Context, databaseIdentity, password, schemaAfter, nameAfter string) (DiscoveryPage, error) {
+	if c.applicationRules() {
+		return c.discoverApplicationResources(ctx, databaseIdentity, password, schemaAfter, nameAfter)
+	}
 	var page DiscoveryPage
 	if !ValidDatabaseIdentity(databaseIdentity) || password == "" || len(schemaAfter) > 63 || len(nameAfter) > 63 {
 		return page, errors.New("invalid PostgreSQL discovery request")

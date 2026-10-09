@@ -50,7 +50,7 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 			state := postgresAccessFailureCode(err, "database_credentials_required")
 			switch state {
 			case "database_permission_mapping_required":
-				fail(state, "PostgreSQL is selected, but your matched user still has pending permissions. Saved drafts are not deployed database rules.", "postgres-permission-drafts")
+				fail(state, "Your email is matched. Configure an existing database-role mapping, or select Application permissions and review resource, field and row rules matching the native application. Unresolved labels remain denied. PostgreSQL is read-only.", "postgres-authorization")
 			case "database_email_confirmation_required":
 				fail(state, "PostgreSQL is selected. Verify your database email before enabling queries for your account.", "database-access")
 			case "postgres_verified_email_required":

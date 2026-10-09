@@ -44,3 +44,17 @@ CREATE TABLE iqkb_data.owner_table(id text);
 ALTER TABLE iqkb_data.owner_table OWNER TO iqkb_owner;
 
 GRANT SELECT(id) ON iqkb_data.documents TO iqkb_service;
+
+-- Disposable application-rule fixture: no RLS or matching SQL role names.
+CREATE TABLE iqkb_data.app_documents(id text PRIMARY KEY,title text,content text,owner_id text,owner_email text,group_id text,hidden text,details jsonb);
+INSERT INTO iqkb_data.app_documents VALUES
+('alex-app','Shared title','Alex scoped content','alex','app-alex@example.com','group-a','Alex hidden value','{"hidden":"structured"}'),
+('blair-app','Shared title','Blair scoped content','blair','app-blair@example.com','group-b','Blair hidden value','{"hidden":"structured"}');
+CREATE TABLE iqkb_data.app_notes(id text PRIMARY KEY,title text,content text,parent_id text REFERENCES iqkb_data.app_documents(id),owner_id text);
+INSERT INTO iqkb_data.app_notes VALUES
+('alex-note','Note','Alex own note','alex-app','alex'),
+('blair-note','Note','Blair own note','blair-app','blair'),
+('other-note','Note','Must stay hidden from Alex','alex-app','blair');
+CREATE TABLE iqkb_data.app_groups(member_id text,group_id text,active boolean,tenant text);
+INSERT INTO iqkb_data.app_groups VALUES ('alex','group-a',true,'tenant-one'),('blair','group-b',true,'tenant-one'),('alex','group-b',false,'tenant-one'),('alex','group-b',true,'other-tenant');
+CREATE VIEW iqkb_data.app_document_view AS SELECT * FROM iqkb_data.app_documents;

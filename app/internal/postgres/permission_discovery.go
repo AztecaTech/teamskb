@@ -10,12 +10,13 @@ import (
 )
 
 type PermissionRelation struct {
-	Schema     string   `json:"schema"`
-	Relation   string   `json:"relation"`
-	Columns    []string `json:"columns"`
-	RLSEnabled bool     `json:"rlsEnabled"`
-	RLSForced  bool     `json:"rlsForced"`
-	Evidence   string   `json:"evidence"`
+	Schema        string   `json:"schema"`
+	Relation      string   `json:"relation"`
+	Columns       []string `json:"columns"`
+	ScalarColumns []string `json:"scalarColumns,omitempty"`
+	RLSEnabled    bool     `json:"rlsEnabled"`
+	RLSForced     bool     `json:"rlsForced"`
+	Evidence      string   `json:"evidence"`
 }
 type PermissionPolicy struct {
 	Schema     string   `json:"schema"`

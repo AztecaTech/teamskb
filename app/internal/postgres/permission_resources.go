@@ -29,7 +29,7 @@ func (c *Connector) DiscoverPermissionResources(ctx context.Context, schemaAfter
 	}
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT n.nspname,c.relname,ARRAY(SELECT a.attname::text FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT') ORDER BY a.attnum LIMIT 101),c.relrowsecurity,c.relforcerowsecurity
+	rows, err := tx.Query(ctx, `SELECT n.nspname,c.relname,ARRAY(SELECT a.attname::text FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT') ORDER BY a.attnum LIMIT 101),c.relrowsecurity,c.relforcerowsecurity,ARRAY(SELECT a.attname::text FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid JOIN pg_namespace tn ON tn.oid=t.typnamespace WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND tn.nspname='pg_catalog' AND t.typname IN ('text','varchar','bpchar','name','uuid','int2','int4','int8','numeric','float4','float8','bool','date','timestamp','timestamptz') AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT') ORDER BY a.attnum LIMIT 101)
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND n.nspname NOT LIKE 'pg_temp%' AND c.relkind IN ('r','p')
 AND (n.nspname::text,c.relname::text)>($1::text,$2::text)
@@ -42,7 +42,7 @@ ORDER BY n.nspname,c.relname LIMIT 26`, schemaAfter, nameAfter)
 	lastSchema, lastName := "", ""
 	for rows.Next() {
 		var item PermissionRelation
-		if err = rows.Scan(&item.Schema, &item.Relation, &item.Columns, &item.RLSEnabled, &item.RLSForced); err != nil {
+		if err = rows.Scan(&item.Schema, &item.Relation, &item.Columns, &item.RLSEnabled, &item.RLSForced, &item.ScalarColumns); err != nil {
 			break
 		}
 		if scanned == 25 {
@@ -62,6 +62,17 @@ ORDER BY n.nspname,c.relname LIMIT 26`, schemaAfter, nameAfter)
 			}
 		}
 		item.Columns = fields
+		scalar := []string{}
+		allowed := map[string]bool{}
+		for _, field := range fields {
+			allowed[field] = true
+		}
+		for _, field := range item.ScalarColumns {
+			if allowed[field] {
+				scalar = append(scalar, field)
+			}
+		}
+		item.ScalarColumns = scalar
 		if len(fields) > 0 {
 			item.Evidence = "readable resource metadata; access requires reviewed rules"
 			page.Resources = append(page.Resources, item)

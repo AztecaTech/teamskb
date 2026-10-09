@@ -6,13 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"iq-kbteams/internal/authorization"
 )
 
-// AdapterConfig points at a DBA-maintained view of the external auth system.
-// Only this view translates external roles; clients never supply their role.
+// AdapterConfig maps an existing identity relation and a reviewed authorization
+// provider. Clients never supply their effective label or identity attributes.
 type AdapterConfig struct {
 	Mode           string                `json:"mode"`
 	Schema         string                `json:"schema"`
@@ -21,6 +23,8 @@ type AdapterConfig struct {
 	Columns        *AuthorizationColumns `json:"columns,omitempty"`
 	TenantScope    string                `json:"tenantScope,omitempty"`
 	RoleMappings   map[string]string     `json:"roleMappings,omitempty"`
+	Rules          []authorization.Rule  `json:"rules,omitempty"`
+	Claims         map[string]string     `json:"claims,omitempty"`
 }
 
 type AuthorizationColumns struct {
@@ -33,7 +37,10 @@ type AuthorizationColumns struct {
 }
 
 type Subject struct{ TenantID, ObjectID, Email string }
-type ResolvedIdentity struct{ UserID, Role, PermissionVersion, ApplicationRole string }
+type ResolvedIdentity struct {
+	UserID, Role, PermissionVersion, ApplicationRole string
+	Claims                                           map[string]string
+}
 
 type AuthorizationError struct {
 	Code  string
@@ -54,6 +61,9 @@ func AuthorizationFailureCode(err error) string {
 }
 
 func (a AdapterConfig) Validate() error {
+	if err := validateApplicationConfiguration(a); err != nil {
+		return err
+	}
 	if len(a.RoleMappings) > 100 {
 		return errors.New("too many role mappings")
 	}
@@ -77,7 +87,7 @@ func (a AdapterConfig) Validate() error {
 			return errors.New("single-tenant mapping requires a trusted tenant scope")
 		}
 	}
-	if (a.Mode != "postgres_role" && a.Mode != "session_context") || !ValidDatabaseIdentity(a.Schema) || !ValidDatabaseIdentity(a.Relation) || strings.TrimSpace(a.ApprovalRecord) == "" || len(a.ApprovalRecord) > 200 {
+	if (a.Mode != "postgres_role" && a.Mode != "session_context" && a.Mode != "application_rules") || !ValidDatabaseIdentity(a.Schema) || !ValidDatabaseIdentity(a.Relation) || strings.TrimSpace(a.ApprovalRecord) == "" || len(a.ApprovalRecord) > 200 {
 		return errors.New("invalid authorization adapter")
 	}
 	return nil
@@ -94,6 +104,7 @@ func (c *Connector) SharedCredentialsConfigured() bool {
 }
 
 func (c *Connector) ForSubject(a AdapterConfig, subject Subject) (*Connector, error) {
+	subject.Email = strings.ToLower(strings.TrimSpace(subject.Email))
 	if a.Validate() != nil || !c.SharedCredentialsConfigured() || subject.TenantID == "" || subject.ObjectID == "" || !strings.Contains(subject.Email, "@") {
 		return nil, errors.New("database adapter, shared credentials, and trusted email are required")
 	}
@@ -106,7 +117,8 @@ func (c *Connector) ForSubject(a AdapterConfig, subject Subject) (*Connector, er
 }
 
 // All identity resolution and SET LOCAL state share the query's read-only
-// transaction. Nothing runs as the service account after resolution.
+// transaction. Native modes switch execution role; application-rules mode only
+// permits server-compiled, field- and row-scoped profile queries.
 func (c *Connector) beginAuthorized(ctx context.Context, login, password string) (*pgx.Conn, pgx.Tx, ResolvedIdentity, error) {
 	var resolved ResolvedIdentity
 	setupError := func(stage string, err error) error {
@@ -131,6 +143,11 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	}
 	if err = setLimits(ctx, tx); err != nil {
 		return fail(setupError("session_limits", err))
+	}
+	if c.applicationRules() {
+		if _, err = tx.Exec(ctx, `SET LOCAL search_path = pg_catalog`); err != nil {
+			return fail(err)
+		}
 	}
 	if c.metadataOnly {
 		var session, current string
@@ -159,6 +176,22 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	resolved, err = c.lookupMappedUser(ctx, tx)
 	if err != nil {
 		return fail(err)
+	}
+	if c.applicationRules() {
+		allowed := false
+		for _, rule := range c.adapter.Rules {
+			if rule.Label == resolved.ApplicationRole && rule.Reviewed {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return fail(&AuthorizationError{Code: "application_permission_rules_required"})
+		}
+		claims, _ := json.Marshal(resolved.Claims)
+		if _, err = tx.Exec(ctx, `SELECT set_config('iqkb.user_id',$1,true),set_config('iqkb.email',$2,true),set_config('iqkb.tenant_id',$3,true),set_config('iqkb.claims',$4,true)`, resolved.UserID, c.subject.Email, c.subject.TenantID, string(claims)); err != nil {
+			return fail(err)
+		}
+		return conn, tx, resolved, nil
 	}
 	if len(c.adapter.RoleMappings) > 0 {
 		translated, ok := c.adapter.RoleMappings[resolved.ApplicationRole]
@@ -252,6 +285,11 @@ func (c *Connector) RecognizeUser(ctx context.Context) (ResolvedIdentity, error)
 	}
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)
+	if c.applicationRules() {
+		if _, err = tx.Exec(ctx, `SET LOCAL search_path = pg_catalog`); err != nil {
+			return ResolvedIdentity{}, err
+		}
+	}
 	return c.lookupMappedUser(ctx, tx)
 }
 
@@ -272,6 +310,28 @@ func (c *Connector) lookupMappedUser(ctx context.Context, tx pgx.Tx) (ResolvedId
 		version = quote(columns.PermissionVersion) + "::text"
 	}
 	lookup := `SELECT ` + quote(columns.UserID) + `::text,` + quote(columns.Role) + `::text,` + version + `,` + quote(columns.Active) + `::boolean FROM ` + relation + ` u WHERE ` + tenant + `=$1::text AND lower(btrim(` + quote(columns.Email) + `::text))=$2 LIMIT 2`
+	claimNames := make([]string, 0, len(c.adapter.Claims))
+	for name := range c.adapter.Claims {
+		claimNames = append(claimNames, name)
+	}
+	sort.Strings(claimNames)
+	if len(claimNames) > 0 {
+		// Attribute values may come from an existing view, but only builtin
+		// scalar columns are accepted; custom casts and structured values are
+		// outside this adapter's permission model.
+		for _, name := range claimNames {
+			var safe bool
+			err := tx.QueryRow(ctx, `SELECT tn.nspname='pg_catalog' AND t.typname IN ('text','varchar','bpchar','name','uuid','int2','int4','int8','numeric','float4','float8','bool','date','timestamp','timestamptz') FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_type t ON t.oid=a.atttypid JOIN pg_namespace tn ON tn.oid=t.typnamespace WHERE n.nspname=$1 AND c.relname=$2 AND a.attname=$3 AND a.attnum>0 AND NOT a.attisdropped`, c.adapter.Schema, c.adapter.Relation, c.adapter.Claims[name]).Scan(&safe)
+			if err != nil || !safe {
+				return resolved, &AuthorizationError{Code: "identity_attribute_unsupported", Cause: err}
+			}
+		}
+		parts := []string{}
+		for _, name := range claimNames {
+			parts = append(parts, "'"+name+"'", quote(c.adapter.Claims[name])+"::text")
+		}
+		lookup = strings.Replace(lookup, "::boolean FROM ", "::boolean,jsonb_build_object("+strings.Join(parts, ",")+") FROM ", 1)
+	}
 	rows, err := tx.Query(ctx, lookup, c.subject.TenantID, strings.ToLower(strings.TrimSpace(c.subject.Email)))
 	if err != nil {
 		return resolved, &AuthorizationError{Code: "user_mapping_query_failed", Cause: err}
@@ -280,7 +340,21 @@ func (c *Connector) lookupMappedUser(ctx context.Context, tx pgx.Tx) (ResolvedId
 	active := false
 	for rows.Next() {
 		count++
-		if err = rows.Scan(&resolved.UserID, &resolved.Role, &resolved.PermissionVersion, &active); err != nil {
+		values := []any{&resolved.UserID, &resolved.Role, &resolved.PermissionVersion, &active}
+		var claimsJSON []byte
+		if len(claimNames) > 0 {
+			values = append(values, &claimsJSON)
+		}
+		err = rows.Scan(values...)
+		if err == nil && len(claimNames) > 0 {
+			err = json.Unmarshal(claimsJSON, &resolved.Claims)
+			for _, value := range resolved.Claims {
+				if len(value) > 512 {
+					err = errors.New("identity attribute is too long")
+				}
+			}
+		}
+		if err != nil {
 			break
 		}
 	}
@@ -299,6 +373,11 @@ func (c *Connector) lookupMappedUser(ctx context.Context, tx pgx.Tx) (ResolvedId
 		return resolved, &AuthorizationError{Code: "user_inactive"}
 	}
 	resolved.ApplicationRole = resolved.Role
+	if len(resolved.Claims) > 0 {
+		data, _ := json.Marshal(resolved.Claims)
+		hash := sha256.Sum256(append([]byte(resolved.PermissionVersion+"\x00"), data...))
+		resolved.PermissionVersion = hex.EncodeToString(hash[:])
+	}
 
 	if resolved.UserID == "" || len(resolved.UserID) > 256 || resolved.ApplicationRole == "" || len(resolved.ApplicationRole) > 256 || resolved.PermissionVersion == "" || len(resolved.PermissionVersion) > 256 {
 		return resolved, &AuthorizationError{Code: "user_mapping_values_invalid"}

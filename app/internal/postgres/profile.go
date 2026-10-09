@@ -460,13 +460,13 @@ func (c *Connector) ProfileSchemaFingerprint(ctx context.Context, databaseIdenti
 	if err := ValidateBusinessProfile(p); err != nil {
 		return "", errors.New("invalid PostgreSQL business profile")
 	}
-	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
+	conn, tx, resolved, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return "", errors.New("PostgreSQL profile metadata check failed")
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	fingerprint, err := validateProfileSchema(ctx, tx, p)
+	fingerprint, err := c.profileSchema(ctx, tx, resolved, p)
 	if err != nil {
 		return "", err
 	}
@@ -477,6 +477,10 @@ func (c *Connector) ProfileSchemaFingerprint(ctx context.Context, databaseIdenti
 }
 
 func validateProfileSchema(ctx context.Context, tx pgx.Tx, p BusinessProfile) (string, error) {
+	return validateProfileSchemaMode(ctx, tx, p, false)
+}
+
+func validateProfileSchemaMode(ctx context.Context, tx pgx.Tx, p BusinessProfile, application bool) (string, error) {
 	if p.SearchStrategy == "full_text" {
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_ts_config c JOIN pg_namespace n ON n.oid=c.cfgnamespace WHERE n.nspname='pg_catalog' AND c.cfgname=$1)`, p.Language).Scan(&exists); err != nil {
@@ -492,7 +496,7 @@ func validateProfileSchema(ctx context.Context, tx pgx.Tx, p BusinessProfile) (s
 	err := tx.QueryRow(ctx, `SELECT c.oid::text,c.relkind::text, pg_get_userbyid(c.relowner)=current_user, c.relrowsecurity, c.relforcerowsecurity
 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
 	WHERE n.nspname=$1 AND c.relname=$2`, p.Schema, p.Relation).Scan(&relationOID, &relationKind, &owned, &rls, &forceRLS)
-	if err != nil || relationKind != "r" && relationKind != "p" && relationKind != "v" || relationKind != "v" && owned && rls && !forceRLS {
+	if err != nil || relationKind != "r" && relationKind != "p" && relationKind != "v" || !application && relationKind != "v" && owned && rls && !forceRLS {
 		return "", errors.New("PostgreSQL profile relation is stale or has unsupported security semantics")
 	}
 	var relationMaterial []string
@@ -578,7 +582,7 @@ JOIN pg_attribute a ON a.attrelid=r.oid AND a.attname=c.column_name
 		return "", errors.New("PostgreSQL profile schema or column permission has changed")
 	}
 	if p.Relationship != nil {
-		parentMaterial, err := validateRelatedRelationship(ctx, tx, p)
+		parentMaterial, err := validateRelatedRelationshipMode(ctx, tx, p, application)
 		if err != nil {
 			return "", err
 		}
@@ -652,11 +656,15 @@ SELECT EXISTS (
 }
 
 func validateRelatedRelationship(ctx context.Context, tx pgx.Tx, p BusinessProfile) ([]string, error) {
+	return validateRelatedRelationshipMode(ctx, tx, p, false)
+}
+
+func validateRelatedRelationshipMode(ctx context.Context, tx pgx.Tx, p BusinessProfile, application bool) ([]string, error) {
 	r := p.Relationship
 	var oid, kind string
 	var owned, rls, forced bool
 	err := tx.QueryRow(ctx, `SELECT c.oid::text,c.relkind::text,pg_get_userbyid(c.relowner)=current_user,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2`, r.ParentSchema, r.ParentRelation).Scan(&oid, &kind, &owned, &rls, &forced)
-	if err != nil || kind != "r" && kind != "p" || owned && rls && !forced {
+	if err != nil || kind != "r" && kind != "p" || !application && owned && rls && !forced {
 		return nil, errors.New("PostgreSQL related parent is stale or has unsupported security semantics")
 	}
 	var uniqueKey, foreignKey bool
@@ -745,12 +753,20 @@ func (c *Connector) ProfileColumnType(ctx context.Context, databaseIdentity, pas
 	if !ValidDatabaseIdentity(databaseIdentity) || password == "" || !validIdentifier(schema) || !validIdentifier(relation) || !validIdentifier(column) {
 		return "", errors.New("invalid PostgreSQL profile column request")
 	}
-	conn, tx, _, err := c.beginAuthorized(ctx, databaseIdentity, password)
+	conn, tx, resolved, err := c.beginAuthorized(ctx, databaseIdentity, password)
 	if err != nil {
 		return "", errors.New("PostgreSQL profile metadata check failed")
 	}
 	defer closeConnection(conn)
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	if c.applicationRules() {
+		if _, err = c.authorizeResource(ctx, resolved, schema, relation, []string{column}); err != nil {
+			return "", err
+		}
+		if err = validateScalarResource(ctx, tx, schema, relation, []string{column}); err != nil {
+			return "", err
+		}
+	}
 	var typ string
 	err = tx.QueryRow(ctx, `SELECT c.data_type FROM information_schema.columns c WHERE c.table_schema=$1 AND c.table_name=$2 AND c.column_name=$3 AND has_column_privilege(current_user,quote_ident(c.table_schema)||'.'||quote_ident(c.table_name),c.column_name,'SELECT')`, schema, relation, column).Scan(&typ)
 	if err != nil || !profileTypeMatches("key", typ) {
