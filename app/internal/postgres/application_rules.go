@@ -12,7 +12,7 @@ import (
 )
 
 func (c *Connector) applicationRules() bool {
-	return c.adapter != nil && c.adapter.Mode == "application_rules"
+	return c != nil && c.adapter != nil && c.adapter.Mode == "application_rules"
 }
 func validateApplicationConfiguration(a AdapterConfig) error {
 	if len(a.Claims) > 16 {
@@ -104,7 +104,7 @@ func (c *Connector) authorizeResource(ctx context.Context, id ResolvedIdentity, 
 	if c.applicationRules() {
 		provider = "application_rules"
 		rules = c.adapter.Rules
-		if id.AutomaticPermissions {
+		if id.ExternalPermissions {
 			rules = id.Rules
 		}
 	}
@@ -262,7 +262,7 @@ func (c *Connector) discoverApplicationResources(ctx context.Context, login, pas
 	defer closeConnection(conn)
 	defer tx.Rollback(ctx)
 	rules := append([]authorization.Rule(nil), c.adapter.Rules...)
-	if id.AutomaticPermissions {
+	if id.ExternalPermissions {
 		rules = append([]authorization.Rule(nil), id.Rules...)
 	}
 	sort.Slice(rules, func(i, j int) bool {

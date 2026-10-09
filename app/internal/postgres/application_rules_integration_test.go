@@ -52,7 +52,7 @@ func TestPostgresAdapterApplicationRulesIntegration(t *testing.T) {
 	profile := BusinessProfile{ID: "app_docs", Version: 1, Label: "Documents", Capability: "entity_lookup", Schema: "iqkb_data", Relation: "app_documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []ProfileColumn{{Name: "content", Type: "text"}}, Approval: "fixture-review"}
 	for _, name := range []string{"alex", "blair"} {
 		c := scope(adapter, name)
-		preview, err := c.PreviewAutomaticPermissions(t.Context())
+		preview, err := c.PreviewPermissions(t.Context())
 		if err != nil || preview.Mode != "internal" || preview.Status != "resolved" || preview.UserID != name || len(preview.Rules) != 2 {
 			t.Fatalf("internal permission preview: %#v %v", preview, err)
 		}
@@ -203,7 +203,7 @@ func TestPostgresAdapterApplicationRulesIntegration(t *testing.T) {
 	t.Run("unmapped labels and inactive users denied", func(t *testing.T) {
 		a := adapter
 		a.Rules = nil
-		preview, err := scope(a, "alex").PreviewAutomaticPermissions(t.Context())
+		preview, err := scope(a, "alex").PreviewPermissions(t.Context())
 		if err != nil || preview.Mode != "internal" || preview.Status != "internal_rules_required" || len(preview.Rules) != 0 {
 			t.Fatal("unconfigured labels acquired default permissions")
 		}

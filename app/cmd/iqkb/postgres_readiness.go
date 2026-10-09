@@ -55,8 +55,8 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 				if adapterErr == nil && adapter != nil && adapter.Mode == "application_rules" {
 					mapped, _, _, mappingErr := postgresMappedAccess(ctx, db, key, connector, principal)
 					if mappingErr == nil {
-						if mapped.PermissionSourceConfigured() {
-							preview, previewErr := mapped.PreviewAutomaticPermissions(ctx)
+						if mapped.ExternalPermissionSourceActive() {
+							preview, previewErr := mapped.PreviewPermissions(ctx)
 							if previewErr != nil {
 								fail(postgres.AuthorizationFailureCode(previewErr), "The native permission source could not authorize this account. Refresh my permissions to check the existing application's decision; manual selections cannot override it.", "application-permissions")
 							} else {
@@ -92,7 +92,7 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 			return
 		}
 		if _, err = scoped.ResolveIdentity(ctx, login, password); err != nil {
-			if scoped.PermissionSourceConfigured() {
+			if scoped.ExternalPermissionSourceActive() {
 				fail(postgres.AuthorizationFailureCode(err), "The native permission source or its mapped resources could not pass the current user's access check. Refresh my permissions and check the native application's decision.", "application-permissions")
 				return
 			}

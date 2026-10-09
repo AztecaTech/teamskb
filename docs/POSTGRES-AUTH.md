@@ -1,5 +1,43 @@
 # PostgreSQL authorization adapters
 
+## Maintaining the adapter
+
+The permission API and saved JSON configuration keep the same field names.
+Application role meanings and table/column mappings belong to administrator
+configuration; they are not defaults in the implementation.
+
+| Responsibility | Implementation |
+| --- | --- |
+| Default/internal versus explicit external provider selection | `app/internal/postgres/permission_config.go` |
+| Existing active-user lookup and read-only identity transaction | `app/internal/postgres/mapped_identity.go` |
+| Permission preview without business-data retrieval | `app/internal/postgres/permission_preview.go` |
+| Optional external decisions and revision binding | `app/internal/postgres/external_permissions.go` |
+| Field authorization and scoped profile SQL | `app/internal/authorization/adapter.go`, `app/internal/postgres/application_rules.go` |
+| Preview HTTP handling | `app/cmd/iqkb/postgres_permissions.go` |
+| Shared frontend configuration and API types | `frontend/src/permissions/types.ts` |
+| Preview/resource loading, pagination and stale-response protection | `frontend/src/permissions/usePermissionDiscovery.ts` |
+| Field/row/membership controls | `frontend/src/permissions/PermissionRuleEditor.tsx` |
+| Optional mapped user attributes | `frontend/src/permissions/IdentityAttributesEditor.tsx` |
+| Editor composition | `frontend/src/ApplicationPermissionEditor.tsx` |
+
+Identity recognition and internal preview use one bounded read-only transaction.
+Recognition never grants search access; retrieval still enters `beginAuthorized`
+and applies reviewed rules before SQL execution. Frontend discovery uses the
+latest committed callbacks and discards replies from a previous identity/provider.
+Internal preview never replaces unsaved policy edits. External snapshots cannot
+become internal role grants when switching providers.
+
+For a new scope, update the rule validator, server SQL enforcement, scope controls
+and denial/isolation tests together. Metadata discovery must not invent its access
+meaning. Unsupported scopes and resources remain denied.
+
+Run `go test ./...` and `go vet ./...` in `app`, and `npm run build` / `npm test` in
+`frontend`. `scripts/validate-postgres-auth.ps1` exercises the real PostgreSQL
+read-only boundary and two-user isolation against a disposable fixture. The
+browser fixture covers fresh/internal-saved/external setup; add
+`--automatic --stale-provider` to verify a delayed external response cannot
+repopulate a switched internal adapter.
+
 ## Permission adapter inside IQ Knowledge
 
 Keep the direct `POSTGRES_DSN` supplied by Dokploy. In Sources, select

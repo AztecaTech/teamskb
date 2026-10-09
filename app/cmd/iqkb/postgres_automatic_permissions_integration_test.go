@@ -75,7 +75,7 @@ func TestPostgresAdapterAutomaticWorkflowIntegration(t *testing.T) {
 		t.Fatalf("save mapping=%d %s", rec.Code, rec.Body.String())
 	}
 	preview := request(authHandler, "GET", "/api/admin/postgres/auth/permissions", nil)
-	var selected postgres.AutomaticPermissionPreview
+	var selected postgres.PermissionPreview
 	if json.Unmarshal(preview.Body.Bytes(), &selected) != nil || preview.Code != 200 || selected.Label != "Reader" || len(selected.Rules) != 1 || !selected.Rules[0].Reviewed || selected.ClaimColumns["native_owner"] != "id" {
 		t.Fatalf("native selection=%d %s", preview.Code, preview.Body.String())
 	}
@@ -131,7 +131,7 @@ func TestPostgresAdapterAutomaticWorkflowIntegration(t *testing.T) {
 	}
 }
 
-func TestAutomaticPermissionsNotConfiguredNeedsNoDatabase(t *testing.T) {
+func TestExternalPermissionsNotConfiguredNeedsNoDatabase(t *testing.T) {
 	request := httptest.NewRequest("GET", "/api/admin/postgres/auth/permissions", nil)
 	response := httptest.NewRecorder()
 	postgresAuthHandler(nil, nil, nil).ServeHTTP(response, request)

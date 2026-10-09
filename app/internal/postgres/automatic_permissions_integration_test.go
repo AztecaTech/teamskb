@@ -23,7 +23,7 @@ func (s *fixtureNativePermissionSource) Resolve(_ context.Context, subject autho
 	}
 	return authorization.ResolvedPermissions{Revision: s.revision, ClaimColumns: map[string]string{"native_owner": "id"}, Rules: []authorization.Rule{{Label: subject.Label, Schema: "iqkb_data", Relation: "app_documents", Fields: []string{"id", "title", "content"}, Scope: authorization.Scope{Kind: "claim", Column: "owner_id", Claim: "native_owner"}, Reviewed: true}}}, nil
 }
-func TestPostgresAdapterAutomaticPermissionsIntegration(t *testing.T) {
+func TestPostgresAdapterExternalPermissionsIntegration(t *testing.T) {
 	dsn := integrationValue(t, "IQKB_AUTH_TEST_DSN_FILE", "")
 	if dsn == "" {
 		t.Skip("run scripts/validate-postgres-auth.ps1")
@@ -47,7 +47,7 @@ func TestPostgresAdapterAutomaticPermissionsIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		preview, err := c.PreviewAutomaticPermissions(t.Context())
+		preview, err := c.PreviewPermissions(t.Context())
 		if err != nil || len(preview.Rules) != 1 || preview.ClaimColumns["native_owner"] != "id" || preview.Rules[0].Scope.Kind != "claim" {
 			t.Fatalf("automatic preview missing: %#v %v", preview, err)
 		}

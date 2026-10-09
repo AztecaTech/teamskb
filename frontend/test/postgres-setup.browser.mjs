@@ -29,6 +29,10 @@ try {
   const automatic = process.argv.includes('--automatic');
   adapter.permissionSource = automatic ? 'external' : 'internal';
   let nativeDenied = false;
+  let holdNextPreview = false;
+  let releaseHeldPreview;
+  let notifyPreviewHeld;
+  const previewHeld = new Promise((resolve) => { notifyPreviewHeld = resolve; });
   const nativeRules = [{label:'Operators',schema:'custom',relation:'records',fields:['record_key','caption','content'],scope:{kind:'user',column:'owner_key'},reviewed:true}];
   const localSaved = process.argv.includes('--internal-saved');
   if (localSaved) adapter.rules = nativeRules;
@@ -63,7 +67,12 @@ try {
       case '/api/postgres/profiles':result={profiles:profile?[{id:profile.id,label:profile.label,version:1,capability:profile.capability}]:[]};break;
       case '/api/admin/postgres/auth/resources':pagesLoaded++;result=url.searchParams.has('afterSchema')?{resources:resources.slice(25)}:{resources:resources.slice(0,25),nextSchema:'custom',nextName:'resource_25'};break;
       case '/api/admin/postgres/auth/permissions':
-        if(nativeDenied){code=424;result={configured:true,mode:'external',error:'permission_source_denied'};}else result=automatic?{configured:true,mode:'external',status:'resolved',userId:'7',label:'Operators',rules:nativeRules}:{configured:true,mode:'internal',status:adapter.rules.some((rule)=>rule.reviewed)?'resolved':'internal_rules_required',userId:'7',label:'Operators',rules:adapter.rules.filter((rule)=>rule.label==='Operators'&&rule.reviewed)};break;
+        if(nativeDenied){code=424;result={configured:true,mode:'external',error:'permission_source_denied'};}else result=automatic?{configured:true,mode:'external',status:'resolved',userId:'7',label:'Operators',rules:nativeRules}:{configured:true,mode:'internal',status:adapter.rules.some((rule)=>rule.reviewed)?'resolved':'internal_rules_required',userId:'7',label:'Operators',rules:adapter.rules.filter((rule)=>rule.label==='Operators'&&rule.reviewed)};
+        if (holdNextPreview) {
+          holdNextPreview = false;
+          await new Promise((resolve) => { releaseHeldPreview = resolve; notifyPreviewHeld(); });
+        }
+        break;
       case '/api/admin/postgres/auth/roles':result={applicationRoles:['Operators','Other label'],executionRoles:[],truncated:false};break;
       case '/api/admin/postgres/discovery':assert.equal(status,'connected');result=metadata;break;
       case '/api/admin/postgres/profiles/preview':result={version:1,sql:'compiled fixture SELECT',parameters:[],outputColumns:[],permissionExplanation:'Reviewed row and field rules apply.'};break;
@@ -141,6 +150,24 @@ try {
     await page.getByText(/Automatic permission lookup could not complete \(permission_source_denied\)/).waitFor();
     assert.equal(await page.getByText('Permitted fields: record_key, caption, content.',{exact:true}).count(),0,'revoked native fields must disappear');
     assert.equal(await page.getByLabel('Row scope').count(),0,'native denial must not expose a manual override');
+  }
+  if (process.argv.includes('--stale-provider')) {
+    assert.ok(automatic,'the stale-provider scenario requires --automatic');
+    nativeDenied = false;
+    holdNextPreview = true;
+    await page.getByRole('button',{name:'Refresh my permissions',exact:true}).click();
+    await previewHeld;
+    await page.getByLabel('Permission system').selectOption('postgres_role');
+    await page.getByLabel('Permission system').selectOption('application_rules');
+    await page.getByRole('heading',{name:'Permission adapter inside IQ Knowledge',exact:true}).waitFor();
+    await page.getByText(/The internal adapter is selected\. Save its mapping draft/).waitFor();
+    const oldResponse = page.waitForResponse((response) => response.url().endsWith('/api/admin/postgres/auth/permissions'));
+    releaseHeldPreview();
+    await oldResponse;
+    // Allow the completed fetch and any resulting React render to finish.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.getByLabel('Row scope').count(),0,'an obsolete external reply must not populate internal label grants');
+    console.log('PASS: a delayed external reply cannot repopulate grants after switching to the internal adapter.');
   }
   assert.deepEqual(errors,[]);
   console.log(automatic ? 'PASS: explicit external source, no service metadata scan, profile prefill, email recheck, own-user test, and revocation without manual fallback.' : localSaved ? 'PASS: internal saved fields and row scope reused, unsaved policy edits preserved, profile prefill, email recheck and own-user test.' : 'PASS: resource pagination, complete permission review, automatic email recheck, profile prefill, optional note, own-user test, and second-user guidance.');

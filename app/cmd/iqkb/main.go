@@ -149,7 +149,7 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
-	externalPermissions := savedAdapter != nil && savedAdapter.PermissionSource == "external"
+	externalPermissions := savedAdapter != nil && savedAdapter.UsesExternalPermissions()
 	dsn, err := readSecret(cfg.postgresDSNFile, "POSTGRES_DSN")
 	if err != nil {
 		return fmt.Errorf("PostgreSQL connection secret: %w", err)
