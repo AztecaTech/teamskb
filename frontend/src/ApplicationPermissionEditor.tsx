@@ -4,9 +4,9 @@ import { permissionRuleIssues } from './postgres-setup.mjs';
 export type Membership = { schema: string; relation: string; userColumn: string; groupColumn: string; activeColumn?: string; tenantColumn?: string };
 export type ReadRule = { label: string; schema: string; relation: string; fields: string[]; scope: { kind: string; column?: string; claim?: string; membership?: Membership }; reviewed: boolean };
 type Resource = { schema: string; relation: string; columns: string[]; scalarColumns?: string[] };
-type Props = { labels: string[]; currentLabel?: string; rules: ReadRule[]; claims: Record<string, string>; identity: { schema: string; relation: string }; disabled: boolean; onChange: (rules: ReadRule[], claims: Record<string, string>) => void; onResourceSelected: (schema: string, relation: string) => void; api: (path: string, init?: RequestInit) => Promise<Response> };
+type Props = { labels: string[]; permissionSource?: 'internal'|'external'; onUseInternal: () => void; currentLabel?: string; rules: ReadRule[]; claims: Record<string, string>; identity: { schema: string; relation: string }; disabled: boolean; onChange: (rules: ReadRule[], claims: Record<string, string>) => void; onResourceSelected: (schema: string, relation: string) => void; api: (path: string, init?: RequestInit) => Promise<Response> };
 
-export default function ApplicationPermissionEditor({ labels, currentLabel, rules, claims, identity, disabled, onChange, onResourceSelected, api }: Props) {
+export default function ApplicationPermissionEditor({ labels, permissionSource, onUseInternal, currentLabel, rules, claims, identity, disabled, onChange, onResourceSelected, api }: Props) {
   const [resources, setResources] = useState<Resource[]>([]);
   const [cursor, setCursor] = useState('');
   const [busy, setBusy] = useState(false);
@@ -15,19 +15,32 @@ export default function ApplicationPermissionEditor({ labels, currentLabel, rule
   const [claimColumn, setClaimColumn] = useState('');
   const [resourceFilter, setResourceFilter] = useState('');
   const [editingResource, setEditingResource] = useState('');
-  const [automatic, setAutomatic] = useState<{configured:boolean;status?:string;userId?:string;label?:string;rules?:ReadRule[];claimColumns?:Record<string,string>;error?:string} | null>(null);
+  const [automatic, setAutomatic] = useState<{configured:boolean;mode?:'internal'|'external';status?:string;userId?:string;label?:string;rules?:ReadRule[];claimColumns?:Record<string,string>;error?:string} | null>(null);
   const loadGeneration = useRef(0);
   async function detectPermissions(generation: number) {
     const response=await api('/api/admin/postgres/auth/permissions');
     const result=await response.json() as NonNullable<typeof automatic>;
     if (generation !== loadGeneration.current) return true;
+    if (permissionSource !== 'external' && result.mode === 'external') {
+      setAutomatic({ configured: true, mode: 'internal' });
+      setMessage('The internal adapter is selected. Save its mapping draft before checking saved permissions. Configure and review its own resource rules; external per-user snapshots are not reused as label grants.');
+      return false;
+    }
     setAutomatic(result);
-    if (!response.ok) { setMessage(`Automatic permission lookup could not complete (${result.error || 'unknown'}). The native permission source must resolve this account; manual selections cannot override it.`);return true; }
+    if (result.mode !== 'external') {
+      if (!response.ok) setMessage(`Saved permission check could not complete (${result.error || 'unknown'}). Review the mapping below; this result does not enable search.`);
+      else if (result.rules?.length) {
+        onResourceSelected(result.rules[0].schema,result.rules[0].relation);
+        setMessage(`Reused ${result.rules.length} reviewed resource rule${result.rules.length === 1 ? '' : 's'} from IQ Knowledge for database user ${result.userId}, label ${result.label}. The first permitted resource is selected for a search profile. You can edit these rules below.`);
+      } else setMessage('The permission adapter runs inside IQ Knowledge. Choose permitted fields and row access once, then save. Matched users reuse those configured rules; metadata and role labels alone grant nothing.');
+      return false;
+    }
+    if (!response.ok) { setMessage(`Automatic permission lookup could not complete (${result.error || 'unknown'}). The explicitly configured external source must resolve this account; manual selections cannot override it.`);return true; }
     if (result.configured && result.rules?.length) {
       onChange(result.rules,result.claimColumns || {});
       onResourceSelected(result.rules[0].schema,result.rules[0].relation);
       setMessage(`Allowed fields and row access selected automatically for database user ${result.userId}, label ${result.label}. The first permitted resource is selected for a search profile; you can choose another below. Save permissions and continue.`);
-    } else setMessage('Automatic selection needs the existing application’s permission source. Table metadata and the shared connection’s access do not define a user’s rights. Your deployment operator can connect the native permission endpoint once; manual configuration remains available below.');
+    } else setMessage('The explicitly configured external source has not supplied readable resources for this account.');
     return result.configured;
   }
   async function load(append = false) {
@@ -53,19 +66,19 @@ export default function ApplicationPermissionEditor({ labels, currentLabel, rule
     } catch (error) { if (generation === loadGeneration.current) setMessage(error instanceof Error ? error.message : 'Permission discovery failed.'); }
     finally { if (generation === loadGeneration.current) setBusy(false); }
   }
-  useEffect(() => { setAutomatic(null); void load(); return () => { loadGeneration.current++; }; }, [identity.schema,identity.relation,currentLabel]);
+  useEffect(() => { setAutomatic(null); void load(); return () => { loadGeneration.current++; }; }, [identity.schema,identity.relation,currentLabel,permissionSource]);
   function update(index: number, change: Partial<ReadRule>) { onChange(rules.map((rule, position) => position === index ? { ...rule, ...change, reviewed: change.reviewed ?? false } : rule), claims); }
   const identityResource = resources.find((resource) => resource.schema === identity.schema && resource.relation === identity.relation);
-  const detectedLabels = [...new Set([...(currentLabel ? [currentLabel] : []), ...labels, ...rules.map((rule) => rule.label)])];
+  const detectedLabels = [...new Set([...(currentLabel ? [currentLabel] : []), ...(automatic?.label ? [automatic.label] : []), ...labels, ...rules.map((rule) => rule.label)])];
   const currentRules = rules.filter((rule) => rule.label === currentLabel);
-  const automated=automatic?.configured===true;
-  if (automated) return <div id="application-permissions" className="query-entry"><h4>Automatically selected permissions</h4><p role="status">{message}</p><p>Fields and row access come from your native permission source. The server rechecks its decisions for every database operation.</p><button type="button" disabled={disabled || busy} onClick={()=>void load()}>Refresh my permissions</button>{automatic.rules?.map((rule)=><div className="query-entry" key={JSON.stringify([rule.schema,rule.relation])}><strong>{rule.schema}.{rule.relation}</strong><p>Permitted fields: {rule.fields.join(', ')}.</p><p>Row access: {rule.scope.kind}{rule.scope.column ? ` on ${rule.scope.column}` : ''}.</p><button type="button" disabled={disabled || busy} onClick={()=>{onResourceSelected(rule.schema,rule.relation);setMessage(`Selected ${rule.schema}.${rule.relation} for the first search profile. Save permissions and continue.`);}}>Search this resource</button></div>)}</div>;
-  return <div id="application-permissions" className="query-entry"><h4>Application permission adapter</h4>
+  const automated=automatic?.configured===true && automatic.mode==='external';
+  if (automated) return <div id="application-permissions" className="query-entry"><h4>Automatically selected permissions</h4><p role="status">{message}</p><p>Fields and row access come from your explicitly selected external source. The server rechecks its decisions for every database operation.</p><button type="button" disabled={disabled || busy} onClick={()=>void load()}>Refresh my permissions</button><button type="button" disabled={disabled || busy} onClick={onUseInternal}>Use the adapter inside IQ Knowledge</button>{automatic.rules?.map((rule)=><div className="query-entry" key={JSON.stringify([rule.schema,rule.relation])}><strong>{rule.schema}.{rule.relation}</strong><p>Permitted fields: {rule.fields.join(', ')}.</p><p>Row access: {rule.scope.kind}{rule.scope.column ? ` on ${rule.scope.column}` : ''}.</p><button type="button" disabled={disabled || busy} onClick={()=>{onResourceSelected(rule.schema,rule.relation);setMessage(`Selected ${rule.schema}.${rule.relation} for the first search profile. Save permissions and continue.`);}}>Search this resource</button></div>)}</div>;
+  return <div id="application-permissions" className="query-entry"><h4>Permission adapter inside IQ Knowledge</h4>
     {currentLabel && <p role="status">Your matched database label is <strong>{currentLabel}</strong>. {currentRules.some((rule) => rule.reviewed) ? 'A reviewed resource rule is configured. Save permissions to continue to search setup.' : currentRules.length ? 'Finish the fields and row access for your resource, then mark the rule reviewed.' : 'No resource is configured for this label yet. Choose a table under this label to begin.'}</p>}
-    <p>Connect the native permission source once to have permitted fields and row access selected automatically for each matched user.</p>
-    <p className="muted">Metadata supplies the table and field names. The native application's permission rules determine access. JSON visibility and custom backend rules still require an adapter extension.</p>
+    <p>The deployment URI connects to PostgreSQL. Your verified Microsoft email identifies one active database user. The rules saved here restrict that user's fields and rows before retrieval.</p>
+    <p className="muted">Roles, tables, columns and membership mappings are configuration stored only in IQ Knowledge. No CRM backend or PostgreSQL changes are required. Review rules against the existing permissions; custom backend or JSON rules cannot be inferred from metadata.</p>
     <fieldset disabled={disabled || busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-      <div className="button-row"><button type="button" onClick={() => void load()}>Detect my permissions</button>{cursor && <button type="button" onClick={() => void load(true)}>Load more resources</button>}</div>
+      <div className="button-row"><button type="button" onClick={() => void load()}>Check saved permissions and discover resources</button>{cursor && <button type="button" onClick={() => void load(true)}>Load more resources</button>}</div>
       {message && <p role="status">{message}</p>}
       <label>Find a resource<input type="search" value={resourceFilter} onChange={(event) => setResourceFilter(event.target.value)} placeholder="Filter loaded tables by schema or name" /></label>
       <p className="muted">{resources.length} resources loaded{cursor ? '; load more if your table is missing' : ''}.</p>

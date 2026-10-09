@@ -109,21 +109,34 @@ func postgresAccessFailureCode(err error, fallback string) string {
 func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/admin/postgres/auth/permissions", func(w http.ResponseWriter, r *http.Request) {
-		if !pg.PermissionSourceConfigured() {
-			writeJSON(w, 200, postgres.AutomaticPermissionPreview{Status: "permission_source_not_configured"})
+		if pg == nil {
+			writeJSON(w, 503, map[string]any{"mode": "internal", "error": "postgres_not_configured"})
 			return
+		}
+		adapter, err := loadPostgresAdapter(db)
+		if err != nil {
+			writeJSON(w, 503, map[string]any{"mode": "internal", "error": "adapter_unavailable"})
+			return
+		}
+		if adapter == nil || adapter.Mode != "application_rules" {
+			writeJSON(w, 200, postgres.AutomaticPermissionPreview{Mode: "internal", Status: "application_adapter_required"})
+			return
+		}
+		mode := "internal"
+		if adapter.PermissionSource == "external" {
+			mode = "external"
 		}
 		principal := r.Context().Value(identityContextKey{}).(identity.Principal)
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
 		scoped, _, _, err := postgresMappedAccess(ctx, db, key, pg, principal)
 		if err != nil {
-			writeJSON(w, 409, map[string]any{"configured": true, "error": postgresAccessFailureCode(err, "database_mapping_required")})
+			writeJSON(w, 409, map[string]any{"configured": true, "mode": mode, "error": postgresAccessFailureCode(err, postgres.AuthorizationFailureCode(err))})
 			return
 		}
 		preview, err := scoped.PreviewAutomaticPermissions(ctx)
 		if err != nil {
-			writeJSON(w, 424, map[string]any{"configured": true, "error": postgres.AuthorizationFailureCode(err)})
+			writeJSON(w, 424, map[string]any{"configured": true, "mode": mode, "error": postgres.AuthorizationFailureCode(err)})
 			return
 		}
 		writeJSON(w, 200, preview)
@@ -206,7 +219,11 @@ func postgresAuthHandler(db *sql.DB, key []byte, pg *postgres.Connector) http.Ha
 			jsonResponse(w, 409, `{"error":"shared_database_credentials_required"}`)
 			return
 		}
-		if adapter.Mode == "application_rules" && pg.PermissionSourceConfigured() {
+		if adapter.PermissionSource == "external" {
+			if !pg.ExternalPermissionSourceAvailable() {
+				writeJSON(w, 409, map[string]string{"error": "permission_source_not_configured"})
+				return
+			}
 			// The displayed per-user native snapshot is not a manual label grant.
 			// Never retain it as a fallback if the source is later disconnected.
 			adapter.Rules = nil

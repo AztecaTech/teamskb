@@ -27,6 +27,13 @@ func TestPostgresAdapterApplicationRulesIntegration(t *testing.T) {
 		t.Fatal("fixture connection failed")
 	}
 	defer admin.Close(t.Context())
+	unusedSource := &fixtureNativePermissionSource{deny: true}
+	connector = connector.WithPermissionSource(unusedSource)
+	t.Cleanup(func() {
+		if unusedSource.calls != 0 {
+			t.Error("internal adapter contacted an external permission source")
+		}
+	})
 	adapter := AdapterConfig{Mode: "application_rules", Schema: "iqkb_auth", Relation: "permission_directory", TenantScope: "tenant-one", ApprovalRecord: "fixture-review", Columns: &AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}}
 	for _, label := range []string{"Reader", "Editor"} {
 		adapter.Rules = append(adapter.Rules, authorization.Rule{Label: label, Schema: "iqkb_data", Relation: "app_documents", Fields: []string{"id", "title", "content"}, Scope: authorization.Scope{Kind: "user", Column: "owner_id"}, Reviewed: true}, authorization.Rule{Label: label, Schema: "iqkb_data", Relation: "app_notes", Fields: []string{"id", "title", "content", "parent_id"}, Scope: authorization.Scope{Kind: "user", Column: "owner_id"}, Reviewed: true})
@@ -45,6 +52,15 @@ func TestPostgresAdapterApplicationRulesIntegration(t *testing.T) {
 	profile := BusinessProfile{ID: "app_docs", Version: 1, Label: "Documents", Capability: "entity_lookup", Schema: "iqkb_data", Relation: "app_documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []ProfileColumn{{Name: "content", Type: "text"}}, Approval: "fixture-review"}
 	for _, name := range []string{"alex", "blair"} {
 		c := scope(adapter, name)
+		preview, err := c.PreviewAutomaticPermissions(t.Context())
+		if err != nil || preview.Mode != "internal" || preview.Status != "resolved" || preview.UserID != name || len(preview.Rules) != 2 {
+			t.Fatalf("internal permission preview: %#v %v", preview, err)
+		}
+		for _, rule := range preview.Rules {
+			if rule.Label != preview.Label {
+				t.Fatal("another label's permission was selected")
+			}
+		}
 		id, err := c.ResolveIdentity(t.Context(), "unused", "unused")
 		if err != nil || id.UserID != name || id.Role != id.ApplicationRole {
 			t.Fatalf("application identity failed: %#v %v", id, err)
@@ -187,6 +203,10 @@ func TestPostgresAdapterApplicationRulesIntegration(t *testing.T) {
 	t.Run("unmapped labels and inactive users denied", func(t *testing.T) {
 		a := adapter
 		a.Rules = nil
+		preview, err := scope(a, "alex").PreviewAutomaticPermissions(t.Context())
+		if err != nil || preview.Mode != "internal" || preview.Status != "internal_rules_required" || len(preview.Rules) != 0 {
+			t.Fatal("unconfigured labels acquired default permissions")
+		}
 		if _, err := scope(a, "alex").ResolveIdentity(t.Context(), "unused", "unused"); AuthorizationFailureCode(err) != "application_permission_rules_required" {
 			t.Fatal("no rules granted access")
 		}

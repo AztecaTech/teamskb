@@ -26,7 +26,6 @@ import (
 	"syscall"
 	"time"
 
-	"iq-kbteams/internal/authorization"
 	"iq-kbteams/internal/graph"
 	"iq-kbteams/internal/identity"
 	"iq-kbteams/internal/postgres"
@@ -146,11 +145,16 @@ func run(cfg config) error {
 		return err
 	}
 	var pg *postgres.Connector
+	savedAdapter, err := loadPostgresAdapter(db)
+	if err != nil {
+		return err
+	}
+	externalPermissions := savedAdapter != nil && savedAdapter.PermissionSource == "external"
 	dsn, err := readSecret(cfg.postgresDSNFile, "POSTGRES_DSN")
 	if err != nil {
 		return fmt.Errorf("PostgreSQL connection secret: %w", err)
 	}
-	if dsn == "" && cfg.postgresPermissionSourceURL != "" {
+	if dsn == "" && externalPermissions {
 		return errors.New("native permission source requires the shared PostgreSQL connection")
 	}
 	if dsn != "" {
@@ -159,20 +163,9 @@ func run(cfg config) error {
 			return err
 		}
 		defer pg.Close()
-		permissionURL := cfg.postgresPermissionSourceURL
-		if permissionURL != "" {
-			if !pg.SharedCredentialsConfigured() {
-				return errors.New("native permission source requires shared PostgreSQL credentials")
-			}
-			token, secretErr := readSecret(cfg.postgresPermissionSourceTokenFile, "POSTGRES_PERMISSION_SOURCE_TOKEN")
-			if secretErr != nil {
-				return errors.New("native permission source credential could not be read")
-			}
-			source, sourceErr := authorization.NewHTTPPermissionSource(permissionURL, token)
-			if sourceErr != nil {
-				return sourceErr
-			}
-			pg = pg.WithPermissionSource(source)
+		pg, err = configurePostgresPermissionSource(cfg, pg, externalPermissions)
+		if err != nil {
+			return err
 		}
 	}
 	if err := store.SeedAdmin(db, cfg.tenantID, cfg.adminObjectID); err != nil {

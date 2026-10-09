@@ -27,8 +27,11 @@ try {
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   let adapter = { mode: 'application_rules', schema: 'custom', relation: 'accounts', approvalRecord: 'fixture', columns: { email: 'email', userId: 'id', role: 'label', active: 'enabled' }, rules: [] };
   const automatic = process.argv.includes('--automatic');
+  adapter.permissionSource = automatic ? 'external' : 'internal';
   let nativeDenied = false;
   const nativeRules = [{label:'Operators',schema:'custom',relation:'records',fields:['record_key','caption','content'],scope:{kind:'user',column:'owner_key'},reviewed:true}];
+  const localSaved = process.argv.includes('--internal-saved');
+  if (localSaved) adapter.rules = nativeRules;
   let status = process.argv.includes('--unconfirmed') ? 'email_confirmation_required' : 'matched_permissions_required';
   let profile;
   let tests = 0;
@@ -60,7 +63,7 @@ try {
       case '/api/postgres/profiles':result={profiles:profile?[{id:profile.id,label:profile.label,version:1,capability:profile.capability}]:[]};break;
       case '/api/admin/postgres/auth/resources':pagesLoaded++;result=url.searchParams.has('afterSchema')?{resources:resources.slice(25)}:{resources:resources.slice(0,25),nextSchema:'custom',nextName:'resource_25'};break;
       case '/api/admin/postgres/auth/permissions':
-        if(nativeDenied){code=424;result={configured:true,error:'permission_source_denied'};}else result=automatic?{configured:true,status:'resolved',userId:'7',label:'Operators',rules:nativeRules}:{configured:false,status:'permission_source_not_configured'};break;
+        if(nativeDenied){code=424;result={configured:true,mode:'external',error:'permission_source_denied'};}else result=automatic?{configured:true,mode:'external',status:'resolved',userId:'7',label:'Operators',rules:nativeRules}:{configured:true,mode:'internal',status:adapter.rules.some((rule)=>rule.reviewed)?'resolved':'internal_rules_required',userId:'7',label:'Operators',rules:adapter.rules.filter((rule)=>rule.label==='Operators'&&rule.reviewed)};break;
       case '/api/admin/postgres/auth/roles':result={applicationRoles:['Operators','Other label'],executionRoles:[],truncated:false};break;
       case '/api/admin/postgres/discovery':assert.equal(status,'connected');result=metadata;break;
       case '/api/admin/postgres/profiles/preview':result={version:1,sql:'compiled fixture SELECT',parameters:[],outputColumns:[],permissionExplanation:'Reviewed row and field rules apply.'};break;
@@ -87,6 +90,18 @@ try {
     assert.equal(await page.getByLabel('Row scope').count(),0,'native access must be selected without manual scope input');
     assert.equal(await page.getByLabel('Add readable resource').count(),0,'native resources must be selected without manual resource input');
     assert.equal(pagesLoaded,0,'automatic selection must not depend on scanning all service metadata');
+  } else if (localSaved) {
+    await page.getByRole('heading',{name:'Permission adapter inside IQ Knowledge',exact:true}).waitFor();
+    await page.getByText(/Reused 1 reviewed resource rule from IQ Knowledge/).waitFor();
+    assert.equal(await page.getByLabel('content',{exact:true}).isChecked(),true,'saved readable fields must be reused');
+    assert.equal(await page.getByLabel('Row scope').inputValue(),'user','saved row restriction must be reused');
+    await page.locator('#application-permissions details.query-entry').filter({has:page.locator('summary',{hasText:'custom.records'})}).locator('summary').click();
+    await page.getByLabel('caption',{exact:true}).uncheck();
+    await page.getByRole('button',{name:'Check saved permissions and discover resources',exact:true}).click();
+    await page.getByText(/Reused 1 reviewed resource rule from IQ Knowledge/).waitFor();
+    assert.equal(await page.getByLabel('caption',{exact:true}).isChecked(),false,'preview must not overwrite an unsaved policy edit');
+    await page.getByLabel('caption',{exact:true}).check();
+    await page.getByRole('checkbox',{name:"These fields and this row access match the native application's existing permissions"}).check();
   } else {
   await page.getByRole('button',{name:'Save mapping draft',exact:true}).click();
   await page.getByText(/Mapping draft saved\. Next, choose a table/).waitFor();
@@ -117,7 +132,7 @@ try {
   if (automatic) assert.deepEqual(adapter.rules,[],'native snapshots must not become saved manual grants');
   else {
     assert.deepEqual(adapter.rules[0].scope,{kind:'user',column:'owner_key'});
-    assert.deepEqual(adapter.rules[0].fields,['record_key','caption','content']);
+    assert.deepEqual([...adapter.rules[0].fields].sort(),['record_key','caption','content'].sort());
   }
   assert.equal(requests.some((request)=>request.includes('permission-drafts')),false);
   if (automatic) {
@@ -128,6 +143,6 @@ try {
     assert.equal(await page.getByLabel('Row scope').count(),0,'native denial must not expose a manual override');
   }
   assert.deepEqual(errors,[]);
-  console.log(automatic ? 'PASS: native permitted fields and row scope selected automatically, no service metadata scan, profile prefill, email recheck, own-user test, and native revocation without manual fallback.' : 'PASS: resource pagination, complete permission review, automatic email recheck, profile prefill, optional note, own-user test, and second-user guidance.');
+  console.log(automatic ? 'PASS: explicit external source, no service metadata scan, profile prefill, email recheck, own-user test, and revocation without manual fallback.' : localSaved ? 'PASS: internal saved fields and row scope reused, unsaved policy edits preserved, profile prefill, email recheck and own-user test.' : 'PASS: resource pagination, complete permission review, automatic email recheck, profile prefill, optional note, own-user test, and second-user guidance.');
 } catch(error) { console.error(JSON.stringify(debug));if(debugPage)console.error((await debugPage.locator('body').innerText()).slice(0,2600));throw error; }
 finally { await browser?.close();await server.close(); }

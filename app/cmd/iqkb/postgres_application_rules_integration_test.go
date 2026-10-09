@@ -61,6 +61,9 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", encode(adapter)); rec.Code != 200 {
 		t.Fatalf("save draft=%d %s", rec.Code, rec.Body.String())
 	}
+	if rec := request(authHandler, "GET", "/api/admin/postgres/auth/permissions", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mode":"internal"`) || !strings.Contains(rec.Body.String(), `"status":"internal_rules_required"`) || strings.Contains(rec.Body.String(), `"fields"`) {
+		t.Fatalf("internal draft preview=%d %s", rec.Code, rec.Body.String())
+	}
 	emailHandler := authenticate(fixedTokenVerifier{alex}, db, false, postgresEmailHandler(db, key, pg))
 	if rec := request(emailHandler, "PUT", "/api/postgres/email", `{"email":"app-alex@example.com"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"matched_permissions_required"`) {
 		t.Fatalf("draft label received access: %d %s", rec.Code, rec.Body.String())
@@ -88,6 +91,13 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 	}
 	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", encode(adapter)); rec.Code != 200 {
 		t.Fatalf("save rules=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := request(authHandler, "GET", "/api/admin/postgres/auth/permissions", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mode":"internal"`) || !strings.Contains(rec.Body.String(), `"status":"resolved"`) || strings.Contains(rec.Body.String(), `"label":"Editor"`) {
+		t.Fatalf("internal matched-user preview=%d %s", rec.Code, rec.Body.String())
+	}
+	saved, err := loadPostgresAdapter(db)
+	if err != nil || len(saved.Rules) != 2 {
+		t.Fatal("internal policy was discarded instead of stored in IQ Knowledge")
 	}
 	if rec := request(authHandler, "POST", "/api/admin/postgres/auth/check", ""); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"authorizationMode":"application_rules"`) {
 		t.Fatalf("check=%d %s", rec.Code, rec.Body.String())

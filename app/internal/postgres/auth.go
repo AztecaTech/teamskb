@@ -16,15 +16,16 @@ import (
 // AdapterConfig maps an existing identity relation and a reviewed authorization
 // provider. Clients never supply their effective label or identity attributes.
 type AdapterConfig struct {
-	Mode           string                `json:"mode"`
-	Schema         string                `json:"schema"`
-	Relation       string                `json:"relation"`
-	ApprovalRecord string                `json:"approvalRecord"`
-	Columns        *AuthorizationColumns `json:"columns,omitempty"`
-	TenantScope    string                `json:"tenantScope,omitempty"`
-	RoleMappings   map[string]string     `json:"roleMappings,omitempty"`
-	Rules          []authorization.Rule  `json:"rules,omitempty"`
-	Claims         map[string]string     `json:"claims,omitempty"`
+	Mode             string                `json:"mode"`
+	PermissionSource string                `json:"permissionSource,omitempty"`
+	Schema           string                `json:"schema"`
+	Relation         string                `json:"relation"`
+	ApprovalRecord   string                `json:"approvalRecord"`
+	Columns          *AuthorizationColumns `json:"columns,omitempty"`
+	TenantScope      string                `json:"tenantScope,omitempty"`
+	RoleMappings     map[string]string     `json:"roleMappings,omitempty"`
+	Rules            []authorization.Rule  `json:"rules,omitempty"`
+	Claims           map[string]string     `json:"claims,omitempty"`
 }
 
 type AuthorizationColumns struct {
@@ -64,6 +65,12 @@ func AuthorizationFailureCode(err error) string {
 }
 
 func (a AdapterConfig) Validate() error {
+	if a.PermissionSource != "" && a.PermissionSource != "internal" && a.PermissionSource != "external" {
+		return errors.New("invalid permission adapter location")
+	}
+	if a.PermissionSource != "" && a.Mode != "application_rules" {
+		return errors.New("permission adapter location requires application rules")
+	}
 	if err := validateApplicationConfiguration(a); err != nil {
 		return err
 	}
@@ -113,6 +120,9 @@ func (c *Connector) ForSubject(a AdapterConfig, subject Subject) (*Connector, er
 	}
 	if a.Columns != nil && a.Columns.TenantID == "" && subject.TenantID != a.TenantScope {
 		return nil, errors.New("database mapping belongs to a different tenant")
+	}
+	if a.PermissionSource == "external" && !c.ExternalPermissionSourceAvailable() {
+		return nil, &AuthorizationError{Code: "permission_source_not_configured"}
 	}
 	copy := *c
 	copy.adapter, copy.subject = &a, &subject

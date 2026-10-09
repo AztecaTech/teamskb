@@ -16,7 +16,15 @@ func (c *Connector) WithPermissionSource(source authorization.PermissionSource) 
 	copy.permissionSource = source
 	return &copy
 }
-func (c *Connector) PermissionSourceConfigured() bool { return c != nil && c.permissionSource != nil }
+func (c *Connector) ExternalPermissionSourceAvailable() bool {
+	return c != nil && c.permissionSource != nil
+}
+
+// External decisions require explicit adapter configuration. Merely retaining
+// an old deployment URL never overrides IQ Knowledge's own saved permissions.
+func (c *Connector) PermissionSourceConfigured() bool {
+	return c != nil && c.applicationRules() && c.adapter.PermissionSource == "external" && c.ExternalPermissionSourceAvailable()
+}
 
 func (c *Connector) resolveAutomaticPermissions(ctx context.Context, tx pgx.Tx, id ResolvedIdentity) (ResolvedIdentity, error) {
 	policy, err := c.permissionSource.Resolve(ctx, authorization.PermissionSubject{UserID: id.UserID, Email: c.subject.Email, TenantID: c.subject.TenantID, ObjectID: c.subject.ObjectID, Label: id.ApplicationRole})
@@ -67,6 +75,7 @@ func (c *Connector) resolveAutomaticPermissions(ctx context.Context, tx pgx.Tx, 
 
 type AutomaticPermissionPreview struct {
 	Configured   bool                 `json:"configured"`
+	Mode         string               `json:"mode"`
 	Status       string               `json:"status"`
 	UserID       string               `json:"userId,omitempty"`
 	Label        string               `json:"label,omitempty"`
@@ -75,13 +84,13 @@ type AutomaticPermissionPreview struct {
 }
 
 func (c *Connector) PreviewAutomaticPermissions(ctx context.Context) (AutomaticPermissionPreview, error) {
-	result := AutomaticPermissionPreview{Configured: c.PermissionSourceConfigured(), Status: "permission_source_not_configured"}
-	if !result.Configured {
-		return result, nil
-	}
 	if !c.applicationRules() || c.subject == nil {
-		return result, errors.New("application permission mapping required")
+		return AutomaticPermissionPreview{}, errors.New("application permission mapping required")
 	}
+	if c.adapter.PermissionSource != "external" {
+		return c.previewInternalPermissions(ctx)
+	}
+	result := AutomaticPermissionPreview{Configured: true, Mode: "external", Status: "permission_source_not_configured"}
 	conn, tx, id, err := c.beginAuthorized(ctx, c.service.User, c.service.Password)
 	if err != nil {
 		return result, err
@@ -94,5 +103,46 @@ func (c *Connector) PreviewAutomaticPermissions(ctx context.Context) (AutomaticP
 	result.Rules = id.Rules
 	// Claims in the preview are column mappings only, never attribute values.
 	result.ClaimColumns = id.AutomaticClaimColumns
+	return result, nil
+}
+
+// Reuse administrator-reviewed policy stored in IQ Knowledge. Labels and all
+// relation/column/scope mappings are data, never guessed from database metadata.
+// Identity, mapped attributes and membership filters remain freshly resolved.
+func (c *Connector) previewInternalPermissions(ctx context.Context) (AutomaticPermissionPreview, error) {
+	result := AutomaticPermissionPreview{Configured: true, Mode: "internal", Status: "internal_rules_required"}
+	id, err := c.RecognizeUser(ctx)
+	if err != nil {
+		return result, err
+	}
+	result.UserID, result.Label = id.UserID, id.ApplicationRole
+	for _, rule := range c.adapter.Rules {
+		if rule.Label == id.ApplicationRole && rule.Reviewed {
+			result.Rules = append(result.Rules, rule)
+		}
+	}
+	if len(result.Rules) == 0 {
+		return result, nil
+	}
+	conn, tx, current, err := c.beginAuthorized(ctx, c.service.User, c.service.Password)
+	if err != nil {
+		return result, err
+	}
+	defer closeConnection(conn)
+	defer tx.Rollback(ctx)
+	if current.UserID != id.UserID || current.ApplicationRole != id.ApplicationRole {
+		return result, &AuthorizationError{Code: "permission_source_identity_mismatch"}
+	}
+	for _, rule := range result.Rules {
+		decision, err := c.authorizeResource(ctx, current, rule.Schema, rule.Relation, rule.Fields)
+		if err != nil {
+			return result, err
+		}
+		if _, err = scopedRelation(ctx, tx, rule.Schema, rule.Relation, decision); err != nil {
+			return result, err
+		}
+	}
+	result.Status = "resolved"
+	result.ClaimColumns = c.adapter.Claims
 	return result, nil
 }

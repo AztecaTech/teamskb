@@ -8,6 +8,8 @@ func TestAdapterRejectsUnreviewedOrUnsafeConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bad := range []AdapterConfig{
+		{Mode: "application_rules", PermissionSource: "guess", Schema: "public", Relation: "users", ApprovalRecord: "ticket"},
+		{Mode: "postgres_role", PermissionSource: "internal", Schema: "public", Relation: "users", ApprovalRecord: "ticket"},
 		{Mode: "ignore_permissions", Schema: "public", Relation: "users", ApprovalRecord: "ticket"},
 		{Mode: "postgres_role", Schema: "public; DROP TABLE users", Relation: "users", ApprovalRecord: "ticket"},
 		{Mode: "session_context", Schema: "public", Relation: "users"},

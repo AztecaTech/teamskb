@@ -40,7 +40,7 @@ func TestPostgresAdapterAutomaticPermissionsIntegration(t *testing.T) {
 	source := &fixtureNativePermissionSource{revision: "native-v1"}
 	connector = connector.WithPermissionSource(source)
 	// No manual readable fields or row scope have been supplied by the operator.
-	adapter := AdapterConfig{Mode: "application_rules", Schema: "iqkb_auth", Relation: "permission_directory", TenantScope: "tenant-one", ApprovalRecord: "fixture", Columns: &AuthorizationColumns{Email: "email", UserID: "id", Role: "role", Active: "enabled"}}
+	adapter := AdapterConfig{Mode: "application_rules", PermissionSource: "external", Schema: "iqkb_auth", Relation: "permission_directory", TenantScope: "tenant-one", ApprovalRecord: "fixture", Columns: &AuthorizationColumns{Email: "email", UserID: "id", Role: "role", Active: "enabled"}}
 	profile := BusinessProfile{ID: "native_records", Version: 1, Label: "Records", Capability: "text_search", SearchStrategy: "keyword", Schema: "iqkb_data", Relation: "app_documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []ProfileColumn{{Name: "content", Type: "text"}}, Approval: "fixture"}
 	for _, name := range []string{"alex", "blair"} {
 		c, err := connector.ForSubject(adapter, Subject{TenantID: "tenant-one", ObjectID: name, Email: "app-" + name + "@example.com"})

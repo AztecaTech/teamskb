@@ -70,7 +70,7 @@ func TestPostgresAdapterAutomaticWorkflowIntegration(t *testing.T) {
 	}
 	authHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresAuthHandler(db, key, pg))
 	// No operator fields or scopes. An obsolete saved claim must also be ignored.
-	adapter := postgres.AdapterConfig{Mode: "application_rules", Schema: "iqkb_auth", Relation: "permission_directory", Claims: map[string]string{"obsolete": "absent_column"}, Columns: &postgres.AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}}
+	adapter := postgres.AdapterConfig{Mode: "application_rules", PermissionSource: "external", Schema: "iqkb_auth", Relation: "permission_directory", Claims: map[string]string{"obsolete": "absent_column"}, Columns: &postgres.AuthorizationColumns{UserID: "id", Email: "email", Role: "role", Active: "enabled"}}
 	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", adapter); rec.Code != 200 {
 		t.Fatalf("save mapping=%d %s", rec.Code, rec.Body.String())
 	}
@@ -126,11 +126,7 @@ func TestPostgresAdapterAutomaticWorkflowIntegration(t *testing.T) {
 	if rec := request(authHandler, "GET", "/api/admin/postgres/auth/permissions", nil); rec.Code != 424 || !strings.Contains(rec.Body.String(), "permission_source_denied") || strings.Contains(rec.Body.String(), `"rules"`) {
 		t.Fatalf("native revocation ignored=%d %s", rec.Code, rec.Body.String())
 	}
-	disconnected, err := pg.WithPermissionSource(nil).ForSubject(*saved, postgres.Subject{TenantID: alex.TenantID, ObjectID: alex.ObjectID, Email: alex.VerifiedEmail})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := disconnected.ResolveIdentity(t.Context(), "unused", "unused"); postgres.AuthorizationFailureCode(err) != "application_permission_rules_required" {
+	if _, err := pg.WithPermissionSource(nil).ForSubject(*saved, postgres.Subject{TenantID: alex.TenantID, ObjectID: alex.ObjectID, Email: alex.VerifiedEmail}); postgres.AuthorizationFailureCode(err) != "permission_source_not_configured" {
 		t.Fatal("disconnected native source fell back to a saved user snapshot")
 	}
 }
@@ -139,7 +135,7 @@ func TestAutomaticPermissionsNotConfiguredNeedsNoDatabase(t *testing.T) {
 	request := httptest.NewRequest("GET", "/api/admin/postgres/auth/permissions", nil)
 	response := httptest.NewRecorder()
 	postgresAuthHandler(nil, nil, nil).ServeHTTP(response, request)
-	if response.Code != 200 || !strings.Contains(response.Body.String(), `"configured":false`) {
-		t.Fatal("missing permission source requires an unnecessary database connection")
+	if response.Code != 503 || !strings.Contains(response.Body.String(), `"error":"postgres_not_configured"`) {
+		t.Fatal("missing database was not reported without opening a connection")
 	}
 }

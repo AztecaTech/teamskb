@@ -1,12 +1,49 @@
 # PostgreSQL authorization adapters
 
-## Automatic permitted fields and row access
+## Permission adapter inside IQ Knowledge
+
+Keep the direct `POSTGRES_DSN` supplied by Dokploy. In Sources, select
+**Application permissions** and configure the existing user relation and its
+email, stable user ID, application-label and active columns. These mappings and
+the permitted resource/field/row rules are stored in IQ Knowledge's own settings.
+No CRM backend deployment, permission endpoint, shared CRM credential, external
+database table, PostgreSQL execution role or grant installation is required.
+
+`application_rules` uses `permissionSource: "internal"` by default (omitting the
+field has the same meaning). Role labels have no built-in meaning. An
+administrator selects existing resources, allowed scalar fields and one supported
+row scope: all reviewed rows, user ID, verified email, a mapped user attribute or
+existing team/group membership. Unreviewed and unmapped labels remain denied.
+**Check saved permissions and discover resources** reuses the current matched
+user's reviewed policy and selects the first permitted resource for a profile.
+The editor remains editable; a metadata scan never selects permissions itself.
+
+Identity and mapped attributes are read from exactly one active database account
+on every operation. The server compiles the configured row and field restrictions
+into profile queries before retrieval, including membership predicates against
+existing tables. Only read-only PostgreSQL transactions are used. Configuration
+changes invalidate email confirmation/profile evidence; existing two-user profile
+checks remain required. Configuration is saved only in IQ Knowledge, never in the
+source database. There are no application role names, CRM relation names or
+production identifiers embedded in this adapter.
+
+If the database contains only role labels and the native application's rules exist
+exclusively in backend code, metadata cannot infer those rules. Translate and
+review supported rules once in IQ Knowledge. Custom API calculations and JSON
+visibility remain unavailable unless an equivalent adapter is implemented.
+
+Old external URL/token settings do not switch an internal adapter or block its
+startup. An explicit external configuration remains separate and never falls back
+to local rules on source failure.
+
+## Optional external permitted fields and row access
 
 Application-permission mode can select each matched user's permitted resources,
 fields and row scope automatically from the native application's permission
 service. Configure `POSTGRES_PERMISSION_SOURCE_URL` and
 `POSTGRES_PERMISSION_SOURCE_TOKEN` (or `POSTGRES_PERMISSION_SOURCE_TOKEN_FILE`)
-once in the deployment. The endpoint must implement the contract below using the
+once in the deployment and explicitly select `permissionSource: "external"`
+in the saved application adapter. The endpoint must already implement the contract below using the
 native application's actual authorization decisions. IQ Knowledge includes the
 client and enforcement; it does not install an endpoint in the owning application
 or infer permissions implemented by arbitrary backend code from a database URI.
@@ -375,34 +412,5 @@ Teams/API fixture and a locally installed Playwright module/browser. Run it with
 `node test/postgres-setup.browser.mjs [PLAYWRIGHT_MODULE_PATH] [BROWSER_EXECUTABLE]`
 from `frontend`. It checks paginated resource selection, complete review gating,
 email recheck, profile prefill, optional review notes, the current user's test and
-second-user guidance. Add `--unconfirmed` to check first-time email confirmation, or `--automatic` to check native field/scope selection without manual inputs and revocation without manual fallback. The PostgreSQL integration fixture separately checks the
+second-user guidance. Add `--internal-saved` to check reuse of saved internal fields/scopes and preservation of unsaved policy edits; `--unconfirmed` checks first-time email confirmation, and `--automatic` checks an explicitly selected external source and revocation without manual fallback. The PostgreSQL integration fixture separately checks the
 real server and database enforcement. Neither test is live Teams/Dokploy validation.
-
-## Connecting the Azteca CRM
-
-The CRM bridge lives in the matching `ats-dashboard` backend at
-`POST /api/integrations/iqkb/permissions`. Its registered native read routes share
-their permission guard with the export. Resources and fields come from those
-routes, their real SELECT projections and safe PostgreSQL metadata. Customer,
-prospect, marketing and ticket read paths are supported. Recipient/JSON/custom
-visibility paths remain unavailable until a matching native evaluator exists.
-The core does not encode CRM tables or role labels.
-
-Deploy the CRM backend change, bind its `IQKB_MICROSOFT_TENANT_ID` to IQ Knowledge's
-`TENANT_ID`, and configure a dedicated shared server credential:
-`IQKB_PERMISSION_TOKEN` in the CRM and `POSTGRES_PERMISSION_SOURCE_TOKEN` in IQ
-Knowledge. Set `POSTGRES_PERMISSION_SOURCE_URL` to
-`https://crm.aztecas.com/api/integrations/iqkb/permissions`.
-The original PostgreSQL URI is unchanged.
-
-`scripts/configure-crm-permissions.ps1 -CrmOrigin https://crm.aztecas.com`
-reads the existing `TENANT_ID` from the local process environment or IQ Knowledge
-env file, generates the token and creates ignored
-settings files for both checkouts without modifying their original `.env` files
-or deploying anything. No identifier or credential needs to be shared in chat or
-embedded in source code. Mounted-file alternatives are supported in both servers. Import the matching settings into Dokploy.
-See `ats-dashboard/docs/iq-knowledge-permissions.md` for the native contract,
-coverage and restrictions. `scripts/validate-crm-permissions.ps1` tests the native
-bridge against a disposable PostgreSQL fixture with two different users, unchanged
-account records and database-enforced read-only transactions. It never connects
-to the production database.
