@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -50,6 +51,36 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 			state := postgresAccessFailureCode(err, "database_credentials_required")
 			switch state {
 			case "database_permission_mapping_required":
+				adapter, adapterErr := loadPostgresAdapter(db)
+				if adapterErr == nil && adapter != nil && adapter.Mode == "application_rules" {
+					mapped, _, _, mappingErr := postgresMappedAccess(ctx, db, key, connector, principal)
+					if mappingErr == nil {
+						if connector.PermissionSourceConfigured() {
+							preview, previewErr := mapped.PreviewAutomaticPermissions(ctx)
+							if previewErr != nil {
+								fail(postgres.AuthorizationFailureCode(previewErr), "The native permission source could not authorize this account. Refresh my permissions to check the existing application's decision; manual selections cannot override it.", "application-permissions")
+							} else {
+								fail("native_permissions_ready", fmt.Sprintf("Native permitted fields and row access are selected for database user %s. Save permissions and continue to recheck your matched email and create a search profile.", preview.UserID), "application-permissions")
+							}
+							return
+						}
+						user, lookupErr := mapped.RecognizeUser(ctx)
+						if lookupErr == nil {
+							drafts := 0
+							for _, rule := range adapter.Rules {
+								if rule.Label == user.ApplicationRole {
+									drafts++
+								}
+							}
+							if drafts == 0 {
+								fail("application_resource_required", fmt.Sprintf("Your email matches database user %s, label %q. No readable resource is configured for this label. Choose your first table under this label, select its permitted fields and row access, then save permissions and continue.", user.UserID, user.ApplicationRole), "application-permissions")
+							} else {
+								fail("application_rule_review_required", fmt.Sprintf("Your email matches label %q. Complete the fields and row access in its resource rule, mark the rule reviewed, then save permissions and continue.", user.ApplicationRole), "application-permissions")
+							}
+							return
+						}
+					}
+				}
 				fail(state, "Your email is matched. Configure an existing database-role mapping, or select Application permissions and review resource, field and row rules matching the native application. Unresolved labels remain denied. PostgreSQL is read-only.", "postgres-authorization")
 			case "database_email_confirmation_required":
 				fail(state, "PostgreSQL is selected. Verify your database email before enabling queries for your account.", "database-access")
@@ -61,6 +92,10 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 			return
 		}
 		if _, err = scoped.ResolveIdentity(ctx, login, password); err != nil {
+			if connector.PermissionSourceConfigured() {
+				fail(postgres.AuthorizationFailureCode(err), "The native permission source or its mapped resources could not pass the current user's access check. Refresh my permissions and check the native application's decision.", "application-permissions")
+				return
+			}
 			fail(postgres.AuthorizationFailureCode(err), "The database identity or execution role check failed. Review the mapping and recheck your access.", "postgres-authorization")
 			return
 		}
@@ -71,7 +106,12 @@ func postgresReadinessHandler(db *sql.DB, key []byte, connector *postgres.Connec
 		}
 		result.Queries = len(tools)
 		if len(tools) == 0 {
-			fail("approved_query_required", "Your database identity is verified, but no searchable query or business profile has been saved.", "postgres-query-catalog")
+			next := "postgres-query-catalog"
+			adapter, _ := loadPostgresAdapter(db)
+			if adapter != nil && adapter.Mode == "application_rules" {
+				next = "business-search-profile"
+			}
+			fail("approved_query_required", "Your database identity is verified. Create and save a business search profile from your permitted resources to make them searchable.", next)
 			return
 		}
 		if !postgresProfilesReady(ctx, db, connector, principal.TenantID, tools) {

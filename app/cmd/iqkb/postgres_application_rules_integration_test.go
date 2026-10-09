@@ -65,6 +65,24 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 	if rec := request(emailHandler, "PUT", "/api/postgres/email", `{"email":"app-alex@example.com"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"matched_permissions_required"`) {
 		t.Fatalf("draft label received access: %d %s", rec.Code, rec.Body.String())
 	}
+	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1)`); err != nil {
+		t.Fatal(err)
+	}
+	readyHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresReadinessHandler(db, key, pg))
+	if rec := request(readyHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"state":"application_resource_required"`) || !strings.Contains(rec.Body.String(), `"next":"application-permissions"`) {
+		t.Fatalf("empty resource guidance: %s", rec.Body.String())
+	}
+	adapter.Rules = []authorization.Rule{{Label: "Reader", Schema: "iqkb_data", Relation: "app_documents", Fields: []string{}, Scope: authorization.Scope{Kind: "pending"}}}
+	if rec := request(authHandler, "PUT", "/api/admin/postgres/auth", encode(adapter)); rec.Code != 200 {
+		t.Fatal("pending resource draft failed")
+	}
+	if rec := request(emailHandler, "PUT", "/api/postgres/email", `{"email":"app-alex@example.com"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"matched_permissions_required"`) {
+		t.Fatal("unreviewed resource authorized search")
+	}
+	if rec := request(readyHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"state":"application_rule_review_required"`) || !strings.Contains(rec.Body.String(), `"next":"application-permissions"`) {
+		t.Fatalf("draft review guidance: %s", rec.Body.String())
+	}
+	adapter.Rules = nil
 	for _, label := range []string{"Reader", "Editor"} {
 		adapter.Rules = append(adapter.Rules, authorization.Rule{Label: label, Schema: "iqkb_data", Relation: "app_documents", Fields: []string{"id", "title", "content"}, Scope: authorization.Scope{Kind: "user", Column: "owner_id"}, Reviewed: true})
 	}
@@ -101,7 +119,10 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 	if rec := request(adminHandler, "GET", "/api/admin/postgres/discovery", ""); rec.Code != 200 || strings.Contains(rec.Body.String(), `"name":"hidden"`) {
 		t.Fatalf("scoped discovery=%d %s", rec.Code, rec.Body.String())
 	}
-	profile := postgres.BusinessProfile{ID: "app_docs", Label: "Documents", Capability: "entity_lookup", Schema: "iqkb_data", Relation: "app_documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []postgres.ProfileColumn{{Name: "content", Type: "text"}}, Approval: "fixture-review"}
+	if rec := request(readyHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"state":"approved_query_required"`) || !strings.Contains(rec.Body.String(), `"next":"business-search-profile"`) {
+		t.Fatalf("missing profile guidance: %s", rec.Body.String())
+	}
+	profile := postgres.BusinessProfile{ID: "app_docs", Label: "Documents", Capability: "entity_lookup", Schema: "iqkb_data", Relation: "app_documents", KeyColumn: "id", LabelColumn: "title", SearchColumns: []string{"title"}, ReturnColumns: []postgres.ProfileColumn{{Name: "content", Type: "text"}}}
 	for _, step := range []struct{ method, path string }{{"POST", "/api/admin/postgres/profiles/preview"}, {"PUT", "/api/admin/postgres/profiles"}} {
 		if rec := request(adminHandler, step.method, step.path, encode(profile)); rec.Code != 200 {
 			t.Fatalf("profile %s=%d %s", step.path, rec.Code, rec.Body.String())
@@ -110,6 +131,9 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 	tools, err := postgres.Catalog(db)
 	if err != nil || len(tools) != 1 {
 		t.Fatal("saved profile missing")
+	}
+	if !strings.Contains(tools[0].ApprovalRecord, alex.ObjectID) || !strings.Contains(tools[0].ApprovalRecord, "reviewed profile at") {
+		t.Fatal("optional note lost trusted review audit")
 	}
 	for index, user := range []identity.Principal{alex, blair} {
 		handler := authenticate(fixedTokenVerifier{user}, db, false, postgresProfileTestHandler(db, key, pg))
@@ -120,10 +144,6 @@ func TestPostgresAdapterApplicationWorkflowIntegration(t *testing.T) {
 			t.Fatal("two-user gate incorrect")
 		}
 	}
-	if _, err = db.Exec(`INSERT INTO source_boundaries(source_id,kind,canonical_boundary,enabled) VALUES('user-postgres','postgres','admin-approved-query-catalog',1)`); err != nil {
-		t.Fatal(err)
-	}
-	readyHandler := authenticate(fixedTokenVerifier{alex}, db, true, postgresReadinessHandler(db, key, pg))
 	if rec := request(readyHandler, "GET", "/api/admin/postgres/readiness", ""); !strings.Contains(rec.Body.String(), `"ready":true`) {
 		t.Fatalf("reviewed app profiles not ready: %s", rec.Body.String())
 	}

@@ -1,5 +1,95 @@
 # PostgreSQL authorization adapters
 
+## Automatic permitted fields and row access
+
+Application-permission mode can select each matched user's permitted resources,
+fields and row scope automatically from the native application's permission
+service. Configure `POSTGRES_PERMISSION_SOURCE_URL` and
+`POSTGRES_PERMISSION_SOURCE_TOKEN` (or `POSTGRES_PERMISSION_SOURCE_TOKEN_FILE`)
+once in the deployment. The endpoint must implement the contract below using the
+native application's actual authorization decisions. IQ Knowledge includes the
+client and enforcement; it does not install an endpoint in the owning application
+or infer permissions implemented by arbitrary backend code from a database URI.
+
+After the identity mapping is saved, the permission editor loads this source
+automatically. The allowed fields and scope are selected without resource, field,
+scope or review-checkbox input. One permitted resource is also selected for the
+first search-profile draft; with several resources the administrator chooses
+which one to make searchable first. The editor shows a read-only permission
+summary and **Refresh my permissions**. Saving the mapping and initial email
+confirmation remain explicit; an already confirmed email is rechecked after a
+save. Profile preview, saving and two-user verification remain required.
+
+The source is configured only on the server. HTTPS certificate verification,
+server bearer authentication, a five-second timeout, no followed redirects and
+bounded strict JSON replies apply. The token is forwarded only to the configured
+endpoint and is never sent to the browser or model. The Dokploy single-container
+launcher passes these settings only to the Go application.
+
+IQ Knowledge sends a `POST` to the configured endpoint:
+
+```json
+{
+  "operation": "read",
+  "subject": {
+    "userId": "7",
+    "email": "person@example.com",
+    "tenantId": "verified-microsoft-tenant",
+    "objectId": "verified-microsoft-object",
+    "label": "native-label"
+  }
+}
+```
+
+The subject comes from the verified Microsoft identity and the unique active
+database account. The service must resolve that account with its current native
+permissions, including native denials or additional account restrictions. It must
+return exactly the same subject and a revision that changes with its policy:
+
+```json
+{
+  "subject": {
+    "userId": "7",
+    "email": "person@example.com",
+    "tenantId": "verified-microsoft-tenant",
+    "objectId": "verified-microsoft-object",
+    "label": "native-label"
+  },
+  "allowed": true,
+  "revision": "native-policy-revision-1",
+  "resources": [
+    {
+      "schema": "custom",
+      "relation": "records",
+      "fields": ["record_key", "caption", "content"],
+      "scope": { "kind": "user", "column": "owner_key" }
+    }
+  ]
+}
+```
+
+This is a protocol example, not a default permission grant. Resource/field names,
+labels and scopes are supplied by the native permission service. The scope kinds
+are the same supported `all`, `user`, `email`, `claim` and `membership` rules
+described below. A claim rule also supplies `claimColumns`, mapping the attribute
+name to an existing scalar column in the identity relation. Attribute values are
+read from the matched database user; they are not accepted from the remote reply.
+No SQL, business rows or search question is sent to the permission service.
+
+Every authorized database operation re-resolves the native decision and validates
+its fields, resource types and scope against PostgreSQL. Its source fingerprint,
+revision, full rules and attribute mapping join the account revision in profile
+evidence, so changes invalidate old two-user tests. A denial, unavailable source,
+identity mismatch, unsupported rule or invalid metadata blocks access; saved
+manual rules cannot override a configured source. The preview API returns only
+the user's allowed fields/scopes and claim column mappings, never claim values
+or business rows. Saving with a configured native source retains the identity
+mapping, but does not persist its per-user rules or claims as manual grants;
+disconnecting that source therefore cannot turn the snapshot into fallback access.
+Without a configured source, the editor explains this missing
+connection and retains the existing reviewed manual mapping flow. No external
+database tables, roles, grants, policies or records are changed.
+
 ## Choosing search sources
 
 The question form offers **Database only**, **Microsoft only**, and **Database
@@ -165,7 +255,7 @@ Selecting Enable PostgreSQL search persists the source choice and runs an admini
 
 A recognized email with unresolved permissions reports `database_permission_mapping_required`, rather than asking the user to repeat email confirmation. In database-policy modes, application labels map only to existing, eligible restricted PostgreSQL execution roles. Application-rules mode instead uses reviewed resource, field and row mappings saved in the app. A completed label mapping can be saved while other labels remain unmapped and denied. Saving the identity mapping itself remains possible before role translation so the user can confirm an email and see the matched application label.
 
-If permissions are implemented only in the native application's code, database metadata cannot infer or enforce them. The application-rules adapter can reproduce reviewed scalar resource and row rules. Rules involving custom API logic, JSON visibility or computed permissions need a dedicated provider; arbitrary native application and authenticated API providers are not implemented. The app explicitly reports the missing mapping and keeps that label's database search unavailable; it never grants access merely from labels such as admin or user or falls back to unrestricted service-account searches. No business tables or role labels are hardcoded.
+If permissions are implemented only in the native application's code, database metadata cannot infer or enforce them. The application-rules adapter can reproduce reviewed scalar resource and row rules. Rules involving custom API logic, JSON visibility or computed permissions need a dedicated provider; the automatic native permission source imports supported declarative rules. Native API data retrieval and arbitrary backend calculations remain unsupported. The app explicitly reports the missing mapping and keeps that label's database search unavailable; it never grants access merely from labels such as admin or user or falls back to unrestricted service-account searches. No business tables or role labels are hardcoded.
 
 The administrator-only resource catalog still lists readable base tables and columns in pages of 25. It does not require user-email permission confirmation, reads metadata rather than sample rows, excludes credential/token/secret fields and never authorizes search by itself. Query previews for business profiles remain fixed SELECT statements and do not create database resources.
 
@@ -247,3 +337,43 @@ permissions must be traced and reviewed separately. The disposable fixture cover
 user/email/attribute scopes, team revocation and tenant restrictions, hidden-field
 and structured-value rejection, parent/child isolation, email confirmation,
 two-user evidence, catalog restrictions and model-prompt isolation.
+
+
+## Completing application-permission setup
+
+The matched database label is shown first in the resource editor. Identity mapping
+can be saved as a draft before any resource permissions exist. Readiness identifies
+whether the current label has no resource rule or an unfinished review, and links
+to that resource editor. Saving an identity-only draft does not report a failed
+connection or enable searches.
+
+Choose one table, its readable fields (including an existing single-column unique
+key and at least one text display/search field), and the row access already allowed
+by the native application. New rules open immediately. Review is unavailable until
+fields, scope columns and any attribute/membership mapping are complete. Resource
+metadata loads up to four pages automatically, with filtering and further paging
+for larger catalogs. Permissions are never inferred from the label's name.
+
+After **Save permissions and continue**, an email previously confirmed for the same
+signed-in account is rechecked automatically against Microsoft and the current
+database mapping. An unconfirmed account still needs its first explicit email
+verification. Existing server confirmation and adapter-fingerprint checks remain
+in force. Accessible metadata supplies a search-profile draft using an actual key,
+text columns and supported output types. Missing/ambiguous keys or missing text
+fields produce instructions rather than invented mappings. Saved profile IDs are
+preserved; new drafts use an unused ID.
+
+Review the draft and select **Preview search profile**, then **Save versioned
+profile**. A review note is optional; the server records the administrator and
+review time when it is blank. Saving runs the current user's access test and shows
+the remaining readiness step. The existing two-distinct-user requirement remains:
+a second database user verifies their email and tests the saved profile under
+Database access. Other labels need their own reviewed resource rules.
+
+`frontend/test/postgres-setup.browser.mjs` exercises this flow with an isolated
+Teams/API fixture and a locally installed Playwright module/browser. Run it with
+`node test/postgres-setup.browser.mjs [PLAYWRIGHT_MODULE_PATH] [BROWSER_EXECUTABLE]`
+from `frontend`. It checks paginated resource selection, complete review gating,
+email recheck, profile prefill, optional review notes, the current user's test and
+second-user guidance. Add `--unconfirmed` to check first-time email confirmation, or `--automatic` to check native field/scope selection without manual inputs and revocation without manual fallback. The PostgreSQL integration fixture separately checks the
+real server and database enforcement. Neither test is live Teams/Dokploy validation.

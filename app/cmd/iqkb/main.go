@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"iq-kbteams/internal/authorization"
 	"iq-kbteams/internal/graph"
 	"iq-kbteams/internal/identity"
 	"iq-kbteams/internal/postgres"
@@ -39,6 +40,7 @@ type config struct {
 	tenantID, adminObjectID, appClientID                                            string
 	bootstrapSecretFile, postgresDSNFile, modelAPIKeyFile                           string
 	postgresConnectionMode                                                          string
+	postgresPermissionSourceURL, postgresPermissionSourceTokenFile                  string
 }
 
 const (
@@ -58,19 +60,21 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 	cfg := config{
-		dbPath:                 env("SQLITE_PATH", "/var/lib/iqkb/config.sqlite"),
-		bridgeSocket:           env("BRIDGE_SOCKET", "/run/iqkb/bridge.sock"),
-		parserSocket:           env("PARSER_SOCKET", "/run/parser/parser.sock"),
-		oboSocket:              env("OBO_SOCKET", "/run/iqkb/obo.sock"),
-		bridgeKeyFile:          os.Getenv("BRIDGE_HMAC_KEY_FILE"),
-		encryptionKeyFile:      os.Getenv("APP_ENCRYPTION_KEY_FILE"),
-		tenantID:               os.Getenv("TENANT_ID"),
-		adminObjectID:          os.Getenv("ADMIN_OBJECT_ID"),
-		appClientID:            os.Getenv("APP_CLIENT_ID"),
-		bootstrapSecretFile:    os.Getenv("BOOTSTRAP_SECRET_FILE"),
-		postgresDSNFile:        os.Getenv("POSTGRES_DSN_FILE"),
-		postgresConnectionMode: os.Getenv("POSTGRES_CONNECTION_MODE"),
-		modelAPIKeyFile:        os.Getenv("MODEL_API_KEY_FILE"),
+		dbPath:                            env("SQLITE_PATH", "/var/lib/iqkb/config.sqlite"),
+		bridgeSocket:                      env("BRIDGE_SOCKET", "/run/iqkb/bridge.sock"),
+		parserSocket:                      env("PARSER_SOCKET", "/run/parser/parser.sock"),
+		oboSocket:                         env("OBO_SOCKET", "/run/iqkb/obo.sock"),
+		bridgeKeyFile:                     os.Getenv("BRIDGE_HMAC_KEY_FILE"),
+		encryptionKeyFile:                 os.Getenv("APP_ENCRYPTION_KEY_FILE"),
+		tenantID:                          os.Getenv("TENANT_ID"),
+		adminObjectID:                     os.Getenv("ADMIN_OBJECT_ID"),
+		appClientID:                       os.Getenv("APP_CLIENT_ID"),
+		bootstrapSecretFile:               os.Getenv("BOOTSTRAP_SECRET_FILE"),
+		postgresDSNFile:                   os.Getenv("POSTGRES_DSN_FILE"),
+		postgresConnectionMode:            os.Getenv("POSTGRES_CONNECTION_MODE"),
+		postgresPermissionSourceURL:       os.Getenv("POSTGRES_PERMISSION_SOURCE_URL"),
+		postgresPermissionSourceTokenFile: os.Getenv("POSTGRES_PERMISSION_SOURCE_TOKEN_FILE"),
+		modelAPIKeyFile:                   os.Getenv("MODEL_API_KEY_FILE"),
 	}
 	if err := run(cfg); err != nil {
 		logger.Error("startup failed", "error", err)
@@ -146,12 +150,30 @@ func run(cfg config) error {
 	if err != nil {
 		return fmt.Errorf("PostgreSQL connection secret: %w", err)
 	}
+	if dsn == "" && cfg.postgresPermissionSourceURL != "" {
+		return errors.New("native permission source requires the shared PostgreSQL connection")
+	}
 	if dsn != "" {
 		pg, err = postgres.OpenWithMode(context.Background(), dsn, cfg.postgresConnectionMode)
 		if err != nil {
 			return err
 		}
 		defer pg.Close()
+		permissionURL := cfg.postgresPermissionSourceURL
+		if permissionURL != "" {
+			if !pg.SharedCredentialsConfigured() {
+				return errors.New("native permission source requires shared PostgreSQL credentials")
+			}
+			token, secretErr := readSecret(cfg.postgresPermissionSourceTokenFile, "POSTGRES_PERMISSION_SOURCE_TOKEN")
+			if secretErr != nil {
+				return errors.New("native permission source credential could not be read")
+			}
+			source, sourceErr := authorization.NewHTTPPermissionSource(permissionURL, token)
+			if sourceErr != nil {
+				return sourceErr
+			}
+			pg = pg.WithPermissionSource(source)
+		}
 	}
 	if err := store.SeedAdmin(db, cfg.tenantID, cfg.adminObjectID); err != nil {
 		return err

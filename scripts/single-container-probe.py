@@ -30,11 +30,11 @@ with sqlite3.connect('/var/lib/iqkb/config.sqlite', timeout=5) as db:
                    group=65532, extra_groups=[], env={"PATH": "/usr/local/bin:/usr/bin:/bin"}, check=True)
 
 secrets = {"MODEL_API_KEY", "APP_CLIENT_SECRET", "BOT_CLIENT_SECRET",
-           "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "MSAL_CACHE_KEY_HEX", "BOOTSTRAP_SECRET"}
+           "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "MSAL_CACHE_KEY_HEX", "BOOTSTRAP_SECRET", "POSTGRES_PERMISSION_SOURCE_TOKEN"}
 bot_enabled = os.environ.get('BOT_ENABLED', 'false').strip().lower() == 'true'
 for pid, uid, allowed in zip(pids, (65534, 65532, 65532, 65533),
                              (set(), {"APP_CLIENT_SECRET", "MSAL_CACHE_KEY_HEX"} | ({"BOT_CLIENT_SECRET"} if bot_enabled else set()),
-                              {"MODEL_API_KEY", "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "BOOTSTRAP_SECRET"}, set())):
+                              {"MODEL_API_KEY", "APP_ENCRYPTION_KEY", "BRIDGE_HMAC_KEY", "BOOTSTRAP_SECRET", "POSTGRES_PERMISSION_SOURCE_TOKEN"}, set())):
     # Inspect as the same UID; do not add SYS_PTRACE just for this test.
     inspect_env = '''
 import json, sys
@@ -43,6 +43,8 @@ with open('/proc/' + sys.argv[1] + '/environ', 'rb') as handle:
 if b'MODEL_API_KEY' in env:
     assert env[b'MODEL_API_KEY'] == b'dummy-model-$-only'
     assert env[b'POSTGRES_DSN'].startswith(b'postgres://')
+    assert env[b'POSTGRES_PERMISSION_SOURCE_URL'] == b'https://native.example.test/read-permissions'
+    assert env[b'POSTGRES_PERMISSION_SOURCE_TOKEN'] == b'synthetic-native-permissions-only'
 print(json.dumps([name.decode() for name in env]))
 '''
     names = json.loads(subprocess.check_output([sys.executable, "-c", inspect_env, str(pid)],

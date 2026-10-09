@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"iq-kbteams/internal/authorization"
 	"iq-kbteams/internal/graph"
 )
 
@@ -47,6 +48,7 @@ type Connector struct {
 	adapter           *AdapterConfig
 	subject           *Subject
 	metadataOnly      bool
+	permissionSource  authorization.PermissionSource
 }
 
 func Open(ctx context.Context, connectionString string) (*Connector, error) {

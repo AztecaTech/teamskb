@@ -39,7 +39,9 @@ MODEL_API_KEY='dummy-model-$-only'
 APP_ENCRYPTION_KEY=1111111111111111111111111111111111111111111111111111111111111111
 BRIDGE_HMAC_KEY=2222222222222222222222222222222222222222222222222222222222222222
 MSAL_CACHE_KEY_HEX=3333333333333333333333333333333333333333333333333333333333333333
-POSTGRES_DSN=postgres://db.example.test:5432/company?sslmode=verify-full
+POSTGRES_DSN=postgres://service:synthetic-db-only@db.example.test:5432/company?sslmode=verify-full
+POSTGRES_PERMISSION_SOURCE_URL=https://native.example.test/read-permissions
+POSTGRES_PERMISSION_SOURCE_TOKEN=synthetic-native-permissions-only
 '@
   if ($TabOnly) {
     $dummyEnv = $dummyEnv -replace '(?m)^BOT_CLIENT_ID=.*\r?\n', '' -replace '(?m)^BOT_CLIENT_SECRET=.*\r?\n', '' -replace '(?m)^TEAMS_APP_ID=.*\r?\n', ''

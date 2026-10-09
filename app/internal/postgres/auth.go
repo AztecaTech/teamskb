@@ -40,6 +40,9 @@ type Subject struct{ TenantID, ObjectID, Email string }
 type ResolvedIdentity struct {
 	UserID, Role, PermissionVersion, ApplicationRole string
 	Claims                                           map[string]string
+	Rules                                            []authorization.Rule
+	AutomaticPermissions                             bool
+	AutomaticClaimColumns                            map[string]string
 }
 
 type AuthorizationError struct {
@@ -173,13 +176,31 @@ func (c *Connector) beginAuthorized(ctx context.Context, login, password string)
 	if err = tx.QueryRow(ctx, `SELECT session_user::text,current_user::text,r.rolsuper FROM pg_roles r WHERE r.rolname=current_user`).Scan(&serviceSession, &serviceCurrent, &serviceSuperuser); err != nil || !validMetadataSession(serviceSession, serviceCurrent) {
 		return fail(&AuthorizationError{Code: "service_identity_mismatch", Cause: err})
 	}
-	resolved, err = c.lookupMappedUser(ctx, tx)
+	lookup := *c
+	if c.applicationRules() && c.PermissionSourceConfigured() {
+		// Native decisions replace saved attribute mappings as well as rules.
+		// Resolve the base identity first, then read only native-selected claims.
+		config := *c.adapter
+		config.Claims = nil
+		lookup.adapter = &config
+	}
+	resolved, err = lookup.lookupMappedUser(ctx, tx)
 	if err != nil {
 		return fail(err)
 	}
 	if c.applicationRules() {
+		if c.PermissionSourceConfigured() {
+			resolved, err = c.resolveAutomaticPermissions(ctx, tx, resolved)
+			if err != nil {
+				return fail(err)
+			}
+		}
 		allowed := false
-		for _, rule := range c.adapter.Rules {
+		rules := c.adapter.Rules
+		if resolved.AutomaticPermissions {
+			rules = resolved.Rules
+		}
+		for _, rule := range rules {
 			if rule.Label == resolved.ApplicationRole && rule.Reviewed {
 				allowed = true
 			}
@@ -290,7 +311,13 @@ func (c *Connector) RecognizeUser(ctx context.Context) (ResolvedIdentity, error)
 			return ResolvedIdentity{}, err
 		}
 	}
-	return c.lookupMappedUser(ctx, tx)
+	lookup := *c
+	if c.applicationRules() && c.PermissionSourceConfigured() {
+		config := *c.adapter
+		config.Claims = nil
+		lookup.adapter = &config
+	}
+	return lookup.lookupMappedUser(ctx, tx)
 }
 
 func (c *Connector) lookupMappedUser(ctx context.Context, tx pgx.Tx) (ResolvedIdentity, error) {

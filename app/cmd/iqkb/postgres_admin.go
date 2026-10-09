@@ -45,6 +45,9 @@ var (
 )
 
 func prepareBusinessProfile(ctx context.Context, db *sql.DB, encryptionKey []byte, pg *postgres.Connector, principal identity.Principal, profile postgres.BusinessProfile) (postgres.QueryTool, error) {
+	if strings.TrimSpace(profile.Approval) == "" {
+		profile.Approval = "Administrator " + principal.ObjectID + " reviewed profile at " + time.Now().UTC().Format(time.RFC3339)
+	}
 	var current int
 	err := db.QueryRowContext(ctx, `SELECT version FROM query_tools WHERE tool_id=?`, profile.ID).Scan(&current)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
