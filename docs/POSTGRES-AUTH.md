@@ -13,9 +13,9 @@ or infer permissions implemented by arbitrary backend code from a database URI.
 
 After the identity mapping is saved, the permission editor loads this source
 automatically. The allowed fields and scope are selected without resource, field,
-scope or review-checkbox input. One permitted resource is also selected for the
-first search-profile draft; with several resources the administrator chooses
-which one to make searchable first. The editor shows a read-only permission
+scope or review-checkbox input. The first permitted resource is also selected for the
+initial search-profile draft; the administrator can choose another permitted
+resource before saving. The editor shows a read-only permission
 summary and **Refresh my permissions**. Saving the mapping and initial email
 confirmation remain explicit; an already confirmed email is rechecked after a
 save. Profile preview, saving and two-user verification remain required.
@@ -377,3 +377,32 @@ from `frontend`. It checks paginated resource selection, complete review gating,
 email recheck, profile prefill, optional review notes, the current user's test and
 second-user guidance. Add `--unconfirmed` to check first-time email confirmation, or `--automatic` to check native field/scope selection without manual inputs and revocation without manual fallback. The PostgreSQL integration fixture separately checks the
 real server and database enforcement. Neither test is live Teams/Dokploy validation.
+
+## Connecting the Azteca CRM
+
+The CRM bridge lives in the matching `ats-dashboard` backend at
+`POST /api/integrations/iqkb/permissions`. Its registered native read routes share
+their permission guard with the export. Resources and fields come from those
+routes, their real SELECT projections and safe PostgreSQL metadata. Customer,
+prospect, marketing and ticket read paths are supported. Recipient/JSON/custom
+visibility paths remain unavailable until a matching native evaluator exists.
+The core does not encode CRM tables or role labels.
+
+Deploy the CRM backend change, bind its `IQKB_MICROSOFT_TENANT_ID` to IQ Knowledge's
+`TENANT_ID`, and configure a dedicated shared server credential:
+`IQKB_PERMISSION_TOKEN` in the CRM and `POSTGRES_PERMISSION_SOURCE_TOKEN` in IQ
+Knowledge. Set `POSTGRES_PERMISSION_SOURCE_URL` to
+`https://crm.aztecas.com/api/integrations/iqkb/permissions`.
+The original PostgreSQL URI is unchanged.
+
+`scripts/configure-crm-permissions.ps1 -CrmOrigin https://crm.aztecas.com`
+reads the existing `TENANT_ID` from the local process environment or IQ Knowledge
+env file, generates the token and creates ignored
+settings files for both checkouts without modifying their original `.env` files
+or deploying anything. No identifier or credential needs to be shared in chat or
+embedded in source code. Mounted-file alternatives are supported in both servers. Import the matching settings into Dokploy.
+See `ats-dashboard/docs/iq-knowledge-permissions.md` for the native contract,
+coverage and restrictions. `scripts/validate-crm-permissions.ps1` tests the native
+bridge against a disposable PostgreSQL fixture with two different users, unchanged
+account records and database-enforced read-only transactions. It never connects
+to the production database.

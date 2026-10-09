@@ -25,8 +25,8 @@ export default function ApplicationPermissionEditor({ labels, currentLabel, rule
     if (!response.ok) { setMessage(`Automatic permission lookup could not complete (${result.error || 'unknown'}). The native permission source must resolve this account; manual selections cannot override it.`);return true; }
     if (result.configured && result.rules?.length) {
       onChange(result.rules,result.claimColumns || {});
-      if (result.rules.length===1) onResourceSelected(result.rules[0].schema,result.rules[0].relation);
-      setMessage(`Allowed fields and row access selected automatically for database user ${result.userId}, label ${result.label}. Save permissions and continue.`);
+      onResourceSelected(result.rules[0].schema,result.rules[0].relation);
+      setMessage(`Allowed fields and row access selected automatically for database user ${result.userId}, label ${result.label}. The first permitted resource is selected for a search profile; you can choose another below. Save permissions and continue.`);
     } else setMessage('Automatic selection needs the existing application’s permission source. Table metadata and the shared connection’s access do not define a user’s rights. Your deployment operator can connect the native permission endpoint once; manual configuration remains available below.');
     return result.configured;
   }
